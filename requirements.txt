@@ -1,0 +1,48 @@
+# ==============================================================================
+# s1-reproduce Requirements (Windows + RTX 4060 适配版)
+# ==============================================================================
+# 提示：
+# 1. 建议先单独安装支持 CUDA 的 PyTorch:
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# 2. 然后一键安装本文件:
+#    pip install -r requirements.txt
+# ==============================================================================
+
+# 1. 基础模型与生态 (Hugging Face Core)
+transformers>=4.44.2        # Qwen2.5 官方推荐与最低兼容版本
+datasets>=2.18.0            # s1K 数据集与 MATH500 数据集加载
+accelerate>=0.29.2          # 轻量级显存管理与设备映射
+tokenizers>=0.15.2
+sentencepiece>=0.2.0
+tiktoken>=0.6.0
+safetensors>=0.4.2
+einops>=0.7.0
+
+# 2. 4060 (8GB) 显存优化与微调组件 (QLoRA & Training)
+bitsandbytes>=0.43.0        # 原生支持 Windows，4-bit/8-bit 量化核心 (8G 显存跑 7B 必备)
+peft>=0.7.1                 # LoRA / QLoRA 适配器
+trl>=0.9.6                  # SFTTrainer 极简微调流水线
+
+# 3. 数学评测与答案解析提取 (MATH500 / AIME24 Evaluation)
+sympy>=1.12                 # 符号数学运算与等价性验证
+regex>=2023.12.25           # 正则表达式增强
+latex2sympy2>=1.9.1         # LaTeX 格式数学表达式解析
+math_verify>=0.1.0          # 现代大模型数学评测标准化抽取器
+
+# 4. API 交互与实验可视化
+openai>=1.56.1              # 基线对比与外部评测 API 支持
+wandb>=0.17.3               # 训练曲线与 Token 预算消耗可视化
+tqdm>=4.66.2
+scipy>=1.13.0
+numpy>=1.26.4
+pyyaml>=6.0.1
+rich>=11.2.0                # 终端美化打印思考过程与推理耗时
+ipykernel>=6.28.0           # Jupyter Notebook 交互调试支持
+ipython>=8.20.0
+
+# ==============================================================================
+# 平台差异组件说明 (Windows 本地已默认注释，迁移至 Linux GPU 集群时可取消注释):
+# ==============================================================================
+# vllm>=0.6.4.post1         # [Linux 专属] Windows 本地使用原生 Transformers 实现 Budget Forcing
+# deepspeed>=0.12.2         # [Linux 专属] 多卡 ZeRO 并行；本地单卡 4060 请使用 Accelerate
+# flash-attn>=2.5.7         # [Linux 专属] Windows 下直接使用 PyTorch 原生 SDPA (attn_implementation="sdpa")

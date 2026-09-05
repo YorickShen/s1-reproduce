@@ -216,3 +216,43 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ==============================================================================
+# 大模型与深度学习专项忽略规则 (LLM & Deep Learning Specific)
+# ==============================================================================
+# 模型权重与检查点文件 (防止超过 GitHub 100MB 单文件限制)
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+
+# 训练与输出目录
+checkpoints/
+outputs/
+output/
+runs/
+saved_models/
+exp/
+
+# 实验日志与追踪
+wandb/
+tensorboard/
+*.log
+eval_results/
+results/
+
+# 缓存与原始大文件数据 (请通过脚本在线下载，切勿直接 push 数据大文件)
+.cache/
+cache/
+hf_cache/
+data/raw/
+data/downloaded/
+
+# IDE 与操作系统配置
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
