@@ -256,3 +256,6 @@ data/downloaded/
 Thumbs.db
 .DS_Store
 
+# Agent & Skills
+.agent/
+
