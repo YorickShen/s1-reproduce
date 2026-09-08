@@ -220,6 +220,7 @@ __marimo__/
 # ==============================================================================
 # 大模型与深度学习专项忽略规则 (LLM & Deep Learning Specific)
 # ==============================================================================
+
 # 模型权重与检查点文件 (防止超过 GitHub 100MB 单文件限制)
 *.pt
 *.pth
@@ -227,35 +228,84 @@ __marimo__/
 *.safetensors
 *.gguf
 *.onnx
+*.ckpt
+*.h5
+*.hdf5
+*.tflite
+*.pkl
+*.pickle
+*.joblib
+*.npy
+*.npz
 
-# 训练与输出目录
+# 训练产物与检查点目录
 checkpoints/
 outputs/
 output/
 runs/
 saved_models/
 exp/
+lora_adapters/
+export/
 
-# 实验日志与追踪
+# 评测与推理结果
+eval_results/
+results/
+predictions/
+
+# 分布式训练与算子加速库临时缓存
+.deepspeed_env
+ray_results/
+.triton/
+triton_cache/
+*.pt.trace.json*
+
+# 实验日志与指标追踪
 wandb/
 tensorboard/
 *.log
-eval_results/
-results/
 
-# 缓存与原始大文件数据 (请通过脚本在线下载，切勿直接 push 数据大文件)
+# 数据集与大文件缓存 (防止将数万条训练样本或大体积数据集推到 git)
+*.parquet
+*.arrow
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+data/
+!data/.gitkeep
+!data/sample/
+!data/samples/
+
+# 模型与数据下载缓存
 .cache/
 cache/
 hf_cache/
-data/raw/
-data/downloaded/
+modelscope_cache/
+.huggingface/
+.modelscope/
+
+# API 密钥与敏感配置 (防止泄漏 API Key 或私有 Token)
+.env
+.env.*
+!.env.example
+secrets.json
+*secret*.json
+*token*.json
+*api_key*
 
 # IDE 与操作系统配置
 .vscode/
 .idea/
 Thumbs.db
+ehthumbs.db
+desktop.ini
 .DS_Store
+$RECYCLE.BIN/
+*.tmp
+*.temp
 
-# Agent & Skills
+# Agent & 本地开发环境
 .agent/
 

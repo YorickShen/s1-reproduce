@@ -2,7 +2,6 @@
 
 > **论文题目**：s1: Simple test-time scaling  
 > **论文链接**：[arXiv:2501.19393](https://arxiv.org/abs/2501.19393)  
-> **作者阵容**：Niklas Muennighoff, Zitong Yang, Weijia Shi, Xiang Lisa Li, Li Fei-Fei, Hannaneh Hajishirzi, Luke Zettlemoyer, Percy Liang, Emmanuel Candès, Tatsunori Hashimoto（来自斯坦福大学、华盛顿大学等）  
 > **官方开源仓库**：[simplescaling/s1 (GitHub)](https://github.com/simplescaling/s1)  
 > **模型与数据**：[simplescaling/s1-32B (HuggingFace)](https://huggingface.co/simplescaling/s1-32B) | [simplescaling/s1K](https://huggingface.co/datasets/simplescaling/s1K)
 
@@ -23,7 +22,6 @@
 
 ## 1. 摘要速览与核心立意（Abstract）
 
-### 用人话翻译
 在 OpenAI 推出 o1、DeepSeek 推出 R1 之后，整个 AI 界意识到了一件事：**让大模型在做题前“多想一会儿”（Test-Time Scaling / 推理期计算扩展），能显著提升回答难题的正确率。**
 
 然而，外界要复现这个能力却异常困难：
@@ -33,7 +31,7 @@
 斯坦福和华盛顿大学的这帮作者问了一个极度返璞归真的问题：
 > **“要让模型学会‘思考更久做对难题’，最少需要多少数据？最简单的做法究竟是什么？”**
 
-他们给出的答案震撼了开源界：
+s1这篇文章给出的答案是：
 1. **数据只要 1,000 条（s1K）**：精心挑选 1,000 道涵盖高难度、多样性与优质排版的数学与科学竞赛题，配上长思维链（CoT）。
 2. **训练只需普通 SFT**：无需复杂的强化学习框架，只用经典的“下一个 Token 预测”（Next-Token Prediction）。在 16 张 NVIDIA H100 上仅需训练 **26 分钟**（折合 7 个 GPU 时，成本不到 50 美元）。
 3. **推理时用一招“强制预算”（Budget Forcing）**：
