@@ -1,7 +1,7 @@
 from datasets import load_dataset, Dataset
 from transformers import PreTrainedTokenizer
 
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
 '''
 检视数据
