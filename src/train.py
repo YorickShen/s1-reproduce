@@ -64,17 +64,3 @@ def get_model(config: S1TrainConfig):
     model.print_trainable_parameters()
 
     return model
-
-
-if __name__ == "__main__":
-    print("=== 正在运行模型与分词器加载自测 ===")
-    config = S1TrainConfig()
-
-    tokenizer = get_tokenizer(config)
-    model = get_model(config)
-
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / (1024 ** 3)
-        reserved = torch.cuda.memory_reserved() / (1024 ** 3)
-        print(f"[*] 显存占用 -> 已分配: {allocated:.2f} GB | 缓存保留: {reserved:.2f} GB")
-        print("[✓] 积木 1 验证成功：模型与 LoRA 成功装配！")
