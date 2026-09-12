@@ -5,11 +5,18 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import torch
-from transformers import AutoTokenizer, BitsAndBytesConfig, AutoModelForCausalLM
+from transformers import (
+    AutoTokenizer, 
+    BitsAndBytesConfig, 
+    AutoModelForCausalLM, 
+    DataCollatorForSeq2Seq, 
+    TrainingArguments, 
+    Trainer,
+    )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 from src.config import S1TrainConfig
-from src.dataset import load_s1_dataset
+from src.dataset import load_s1_dataset, tokenize_s1_sample
 
 
 # 加载分词器
@@ -64,3 +71,58 @@ def get_model(config: S1TrainConfig):
     model.print_trainable_parameters()
 
     return model
+
+# 构建动态批次整理器
+def get_data_collator(tokenizer):
+    return DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        pad_to_multiple_of=8,
+        label_pad_token_id=-100,
+        return_tensors="pt"
+    )
+
+# 训练总装函数
+def train(config:S1TrainConfig, max_samples: int = None):
+    # 准备核心组件
+    tokenizer = get_tokenizer(config)
+    model = get_model(config)
+    data_collator = get_data_collator(tokenizer)
+
+    # 加载数据并映射分词
+    raw_ds = load_s1_dataset(max_samples=max_samples)
+    print(f"[*] 正在执行分词与 Loss 掩码 (max_seq_length={config.max_seq_length})...")
+    train_ds = raw_ds.map(
+        lambda example: tokenize_s1_sample(
+            example,
+            tokenizer=tokenizer,
+            max_length=config.max_seq_length
+        ),
+        remove_columns=raw_ds.column_names,
+        desc="[*] 正在分词与打掩码"
+    )
+
+    # 装配训练超参
+    training_args = TrainingArguments(
+        output_dir=config.output_dir,
+        learning_rate=config.learning_rate,
+        per_device_train_batch_size=config.per_device_train_batch_size,
+        optim=config.optim,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        bf16=config.bf16,
+        max_steps=config.max_steps,
+        save_strategy=config.save_strategy,
+        num_train_epochs=config.epochs,
+        logging_steps=config.logging_steps,
+        report_to="none"
+    )
+
+    # 组装Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        data_collator=data_collator
+    )
+
+    print("[*] 开始训练...")
+    trainer.train()

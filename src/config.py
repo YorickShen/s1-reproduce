@@ -18,3 +18,17 @@ class S1TrainConfig:
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj"
     ])
+
+    # 训练超参数
+    output_dir: str = "./outputs/s1-7b-qlora"
+    max_seq_length: int = 2048
+    learning_rate: float = 1e-4
+    per_device_train_batch_size: int = 1
+    gradient_accumulation_steps: int = 16
+    epochs: int = 5
+    optim: str = "paged_adamw_8bit"
+    logging_steps: int = 1
+    save_strategy: str = "epoch"
+    bf16: bool = True
+    max_steps: int = -1
+

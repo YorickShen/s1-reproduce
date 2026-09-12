@@ -88,7 +88,7 @@ def load_s1_dataset(
 def tokenize_s1_sample(
         example: Dict[str, Any],
         tokenizer: PreTrainedTokenizer,
-        max_lenth: int = 3072
+        max_length: int = 3072
 ) -> Dict[str, List[int]]:
 
         # 单独对 prompt 编码
@@ -105,10 +105,10 @@ def tokenize_s1_sample(
         labels = [-100] * len(prompt_ids) +list(response_ids)
 
         # 超过最大长度时截断
-        if len(input_ids) > max_lenth:
-                input_ids = input_ids[:max_lenth]
-                attention_mask = attention_mask[:max_lenth]
-                labels = labels[:max_lenth]
+        if len(input_ids) > max_length:
+                input_ids = input_ids[:max_length]
+                attention_mask = attention_mask[:max_length]
+                labels = labels[:max_length]
 
         return {
                 "input_ids": input_ids,
