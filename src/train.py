@@ -140,7 +140,7 @@ def train(config:S1TrainConfig, max_samples: int = None):
         save_strategy=config.save_strategy,
         num_train_epochs=config.epochs,
         logging_steps=config.logging_steps,
-        report_to="none"
+        report_to="tensorboard",
     )
 
     # 组装Trainer
@@ -163,10 +163,8 @@ def train(config:S1TrainConfig, max_samples: int = None):
 if __name__ == "__main__":
         # 实例化默认配置
         cfg = S1TrainConfig()
-
-        # ================= 2-step 冒烟压测专有配置 =================
-        # 覆盖 max_steps = 2，跑 2 次有效更新即停
-        cfg.max_steps = 2
+        cfg.max_steps = 5
+        cfg.gradient_accumulation_steps = 1
 
         print("=" * 60)
         print("[*] 正在启动 2-step 显存冒烟压测 (Dry Run)...")
@@ -175,5 +173,5 @@ if __name__ == "__main__":
         print(f"[*] 优化器: {cfg.optim}")
         print("=" * 60)
 
-        # 仅抽取 4 条样本快速验证整个流水线
-        train(cfg, max_samples=4)
+        # 抽取 8 条样本足够跑完 5 步
+        train(cfg, max_samples=8)
