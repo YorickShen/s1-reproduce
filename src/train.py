@@ -12,6 +12,7 @@ from transformers import (
     DataCollatorForSeq2Seq, 
     TrainingArguments, 
     Trainer,
+    TrainerCallback,
     )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
@@ -81,6 +82,32 @@ def get_data_collator(tokenizer):
         return_tensors="pt"
     )
 
+# 进度汇报
+class PrettyProgressCallback(TrainerCallback):
+     def on_log(self, args, state, control, logs=None, **kwargs):
+          if logs and "loss" in logs:
+               cur_step = state.global_step
+               max_step = state.max_steps
+               cur_epoch = logs.get("epoch", state.epoch or 0.0)
+               loss = logs.get("loss", 0.0)
+               lr = logs.get("learning_rate", 0.0)
+
+               # 步数进度百分比
+               percent = (cur_step / max_step * 100) if max_step > 0 else 0.0
+
+               # 总 epoch 显示容错处理
+               total_epochs = (
+                    f"{args.num_train_epochs:.1f}"
+                    if args.num_train_epochs is not None
+                    else "?"
+               )
+
+               print(
+                    f"[*] [Epoch {cur_epoch:.2f}/{total_epochs}] "
+                    f"Step: {cur_step}/{max_step} ({percent:.1f}) |"
+                    f"Loss: {loss:.4f} | LR: {lr:.2e}"
+               )
+
 # 训练总装函数
 def train(config:S1TrainConfig, max_samples: int = None):
     # 准备核心组件
@@ -121,8 +148,32 @@ def train(config:S1TrainConfig, max_samples: int = None):
         model=model,
         args=training_args,
         train_dataset=train_ds,
-        data_collator=data_collator
+        data_collator=data_collator,
+        callbacks=[PrettyProgressCallback()]
     )
 
     print("[*] 开始训练...")
     trainer.train()
+
+    #训练完毕后保存 LoRA 适配器权重与配置
+    print(f"[*] 训练完毕，正在保存模型权重至：{config.output_dir}...")
+    trainer.save_model()
+    print("[*] 模型保存成功!")
+
+if __name__ == "__main__":
+        # 实例化默认配置
+        cfg = S1TrainConfig()
+
+        # ================= 2-step 冒烟压测专有配置 =================
+        # 覆盖 max_steps = 2，跑 2 次有效更新即停
+        cfg.max_steps = 2
+
+        print("=" * 60)
+        print("[*] 正在启动 2-step 显存冒烟压测 (Dry Run)...")
+        print(f"[*] 物理 Batch Size: {cfg.per_device_train_batch_size}")
+        print(f"[*] 梯度累积步数: {cfg.gradient_accumulation_steps}")
+        print(f"[*] 优化器: {cfg.optim}")
+        print("=" * 60)
+
+        # 仅抽取 4 条样本快速验证整个流水线
+        train(cfg, max_samples=4)

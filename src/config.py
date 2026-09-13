@@ -1,5 +1,9 @@
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List
+
+# 锚定根目录
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 @dataclass
 class S1TrainConfig:
@@ -20,7 +24,7 @@ class S1TrainConfig:
     ])
 
     # 训练超参数
-    output_dir: str = "./outputs/s1-7b-qlora"
+    output_dir: str = str(PROJECT_ROOT/"outputs"/"s1-7b-qlora")
     max_seq_length: int = 2048
     learning_rate: float = 1e-4
     per_device_train_batch_size: int = 1
