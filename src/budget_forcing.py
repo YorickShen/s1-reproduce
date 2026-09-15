@@ -131,7 +131,7 @@ def budget_forcing_generate(
     )
 
     # 截取 prompt 之后生成的全部 token （包含完整思考链与最终答案）
-    generated_tokens = final_outputs[0, prompt_len]
+    generated_tokens = final_outputs[0, prompt_len:]
     full_response = tokenizer.decode(generated_tokens, skip_special_tokens=False)
 
     return full_response
