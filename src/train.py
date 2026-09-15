@@ -140,7 +140,7 @@ def train(config:S1TrainConfig, max_samples: int = None):
         save_strategy=config.save_strategy,
         num_train_epochs=config.epochs,
         logging_steps=config.logging_steps,
-        report_to="tensorboard",
+        report_to="None",
     )
 
     # 组装Trainer
@@ -160,18 +160,3 @@ def train(config:S1TrainConfig, max_samples: int = None):
     trainer.save_model()
     print("[*] 模型保存成功!")
 
-if __name__ == "__main__":
-        # 实例化默认配置
-        cfg = S1TrainConfig()
-        cfg.max_steps = 5
-        cfg.gradient_accumulation_steps = 1
-
-        print("=" * 60)
-        print("[*] 正在启动 2-step 显存冒烟压测 (Dry Run)...")
-        print(f"[*] 物理 Batch Size: {cfg.per_device_train_batch_size}")
-        print(f"[*] 梯度累积步数: {cfg.gradient_accumulation_steps}")
-        print(f"[*] 优化器: {cfg.optim}")
-        print("=" * 60)
-
-        # 抽取 8 条样本足够跑完 5 步
-        train(cfg, max_samples=8)

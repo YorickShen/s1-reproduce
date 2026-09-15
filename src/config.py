@@ -1,6 +1,7 @@
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
+import torch
 
 # 锚定根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -35,4 +36,5 @@ class S1TrainConfig:
     save_strategy: str = "epoch"
     bf16: bool = True
     max_steps: int = -1
+
 
