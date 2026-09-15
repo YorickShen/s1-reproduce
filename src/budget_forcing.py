@@ -1,3 +1,13 @@
+import sys
+import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+
 from dataclasses import dataclass
 from typing import List, Optional
 import torch
@@ -6,13 +16,20 @@ from transformers import(
     StoppingCriteriaList,
     PreTrainedModel,
     PreTrainedTokenizer,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
 ) 
+from peft import PeftModel
+
+from src.config import S1TrainConfig
+from src.dataset import format_s1_prompt_and_response
 
 # Budget Forcing 推理控制超参数
 @dataclass
 class BudgetForcingConfig:
     # 思考预算：期望模型在得到最终答案前至少产生思考的token数量
-    thinking_budget: int = 512
+    thinking_budget: int = 256
 
     # 思考强行转折提示词
     turn_prompt: str = "\nWait, let me double check this ...\n"
@@ -22,7 +39,7 @@ class BudgetForcingConfig:
 
     # 标记定义
     think_start_token: str = "<|im_start|>think\n"
-    answer_start_token: str = "<|im_start|>answer\n"
+    answer_start_token: str = "<|im_start|>answer"
     eos_token: str = "<|im_end|>"
 
 # 哨兵类，在目标 token 序列停止
@@ -42,6 +59,26 @@ class StopOnTokenSequenceCriteria(StoppingCriteria):
         # 取序列最末端的 seq_len 个 token,在GPU内部做比对
         tail = input_ids[0,-self.seq_len:]
         return torch.equal(tail, self.target_tensor)
+
+#  加载纯净的 4-bit 量化基座模型，不提前包裹未经训练的 LoRA 壳
+def load_clean_base_model(config: S1TrainConfig):
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=config.load_in_4bit,
+        bnb_4bit_quant_type=config.bnb_4bit_quant_type,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        config.model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+        local_files_only=True
+    )
+
+    return model
 
 # s1论文核心推理算法
 def budget_forcing_generate(
@@ -78,11 +115,11 @@ def budget_forcing_generate(
 
         # 是否达到思考预算
         if thinking_tokens_count >= config.thinking_budget:
+            print(f"[*] 思考预算达成 （已思考 {thinking_tokens_count} tokens，拦截 {intercept_count}次），准备进入最终作答...")
             # 预算已满如果还没有停止标记，直接手动停止思考
             if not torch.equal(current_ids[0, -len(answer_tokens):], stop_criteria.target_tensor):
                 answer_tensor = torch.tensor([answer_tokens], dtype=torch.long, device=device)
                 current_ids = torch.cat([current_ids, answer_tensor], dim=1)
-            print(f"[*] 思考预算达成 （已思考 {thinking_tokens_count} tokens，拦截 {intercept_count}次），准备进入最终作答...")
             break
 
         # 还剩多少思考 token
@@ -93,7 +130,7 @@ def budget_forcing_generate(
             max_new_tokens=remaining_budget,
             stopping_criteria=stopping_criteria,
             pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=None,
+            eos_token_id=eos_token_id,
             do_sample=False,
         )
 
@@ -114,6 +151,12 @@ def budget_forcing_generate(
                 print(f"[*] 已强行注入思考转折词，继续思考推导")
             else:
                 break
+        elif current_ids[0, -1].item() == eos_token_id:
+            # 若模型输出了 <|im_end|>，剥除该标记并注入转折词
+            intercept_count += 1
+            print(f"[*] [拦截抓包第 {intercept_count} 次] 模型试图输出结束符退出，强制截断并注入反思词...")
+            current_ids = current_ids[:,:-1]
+            current_ids = torch.cat([current_ids, turn_tokens], dim=1)
         else:
             pass
 
@@ -137,35 +180,42 @@ def budget_forcing_generate(
     return full_response
 
 if __name__ == "__main__":
-    from src.config import S1TrainConfig
-    from src.train import get_tokenizer, get_model
-    from src.dataset import format_s1_prompt_and_response
+    from src.train import get_tokenizer
 
     print("=" * 60)
-    print("[*] 正在载入 4-bit 模型与 Tokenizer 进行 Budget Forcing 推理冒烟实测...")
+    print("[*] 正在载入纯净基座并单层挂载 LoRA 适配器权重...")
     print("=" * 60)
 
     cfg = S1TrainConfig()
     tokenizer = get_tokenizer(cfg)
-    model = get_model(cfg)
+    base_model = load_clean_base_model(cfg)
+
+    checkpoint_dir = PROJECT_ROOT / "outputs" / "s1-7b-qlora" / "checkpoint-5"
+    if checkpoint_dir.exists():
+        print(f"[*] 注入已微调权重: {checkpoint_dir}")
+        model = PeftModel.from_pretrained(base_model, str(checkpoint_dir))
+    else:
+        print(f"[!] 警告: 未检测到 {checkpoint_dir}，使用原生基座")
+        model = base_model
+
+    # 切换至评估模式，冻结模型状态
+    model.eval()
 
     # 构造一道测试题
-    test_question = "If 2x + 5 = 17, what is the value of x? Solve step by step."
+    test_question = "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step."
     formatted = format_s1_prompt_and_response(
         question=test_question,
         thinking_trajectory="",
-        attempt=""
+        attempt="",
     )
-    # 我们只需要 Prompt 部分（以 <|im_start|>think\n 结尾）
     prompt = formatted["prompt"]
 
     print("\n[Input Prompt]:")
     print(prompt)
 
-    # 实例化推理配置：要求模型至少深度思考 256 个 Token 才准交卷！
     forcing_config = BudgetForcingConfig(
-        thinking_budget=256,
-        turn_prompt="\nWait, let me rethink and double check my calculation step by step:\n"
+        thinking_budget=384,
+        turn_prompt="\nWait, let me rethink this problem from another angle and verify my steps:"
     )
 
     print("\n[*] 正在启动 Budget Forcing 推理生成...")
