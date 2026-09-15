@@ -25,10 +25,29 @@ def parse_s1_response(raw_text: str) -> ParsedS1Output:
 
     if not thinking_text and not answer_text:
         answer_text = raw_text.strip()
-        
+
     return ParsedS1Output(
         raw_text=raw_text,
         thinking_text=thinking_text,
         answer_text=answer_text,
         extracted_answer=""
     )
+
+# 解决简单正则式无法处理嵌套大括号的问题
+def _extract_boxed_content(text: str) -> Optional[str]:
+    idx = text.rfind(r"\boxed{")
+    if idx == -1:
+        return None
+
+    # 从 \boxed{ 的 '{' 之后开始扫描
+    start_pos = idx + len(r"\boxed{")
+    depth = 1
+    for i in range(start_pos, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start_pos:i].strip()
+    return None
+
