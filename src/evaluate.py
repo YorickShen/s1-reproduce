@@ -6,6 +6,9 @@ from fractions import Fraction
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer 
 
+from src.dataset import format_s1_prompt_and_response
+from src.budget_forcing import budget_forcing_generate, BudgetForcingConfig
+
 # 结构化模型输出结果
 @dataclass
 class ParsedS1Output:
@@ -169,4 +172,77 @@ def baseline_generate(
 
     return tokenizer.decode(generated_tokens, skip_special_tokens=False)
 
-    
+# 题目评测对比结果数据结构
+@dataclass
+class CompareResult:
+    question: str
+    ground_truth: str
+
+    # 对照组指标
+    baseline_thinking_tokens: int
+    baseline_total_tokens: int
+    baseline_answer: str
+    baseline_correct: bool
+
+    # 实验组指标
+    s1_thinking_tokens: int
+    s1_total_tokens: int
+    s1_answer: str
+    s1_correct: bool   
+
+# 导出对比数据集
+def evaluate_single_sample(
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        question: str,
+        ground_truth: str,
+        budget_config: Optional[Any] = None,
+) -> CompareResult:
+    if budget_config is None:
+        budget_config = BudgetForcingConfig()
+
+    # 构造统一的标准prompt
+    prompt_dict = format_s1_prompt_and_response(
+        question=question,
+        thinking_trajectory="",
+        attempt="",
+    )
+    prompt = prompt_dict["prompt"]
+
+    print(f"\n[Prompt]: {question}")
+    print(f"[Ground Truth]: {ground_truth}")
+
+    # 1.运行对照组(baseline)
+    print("\n---> 正在运行 Baseline ...")
+    baseline_raw = baseline_generate(model, tokenizer, prompt)
+    baseline_parsed = parse_s1_response(baseline_raw)
+
+    # token 统计
+    base_think_tokens = len(tokenizer.encode(baseline_parsed.thinking_text, add_special_tokens=False))
+    base_total_tokens = len(tokenizer.encode(baseline_raw,add_special_tokens=False))
+    base_correct = is_math_equiv(baseline_parsed.extracted_answer, ground_truth)
+    print(f"[Baseline 结果] 思考: {base_think_tokens} tokens | 提取: '{baseline_parsed.extracted_answer}' | 判定:{base_correct}")
+
+    # 2.运行实验组(s1 Budget forcing)
+    print("\n---> 正在运行 s1 ...")
+    s1_raw = budget_forcing_generate(model, tokenizer, prompt, config=budget_config)
+    s1_parsed = parse_s1_response(s1_raw)
+
+    # token 统计
+    s1_think_tokens = len(tokenizer.encode(s1_parsed.thinking_text, add_special_tokens=False))
+    s1_total_tokens = len(tokenizer.encode(s1_raw, add_special_tokens=False))
+    s1_correct = is_math_equiv(s1_parsed.extracted_answer, ground_truth)
+    print(f"[s1 结果] 思考: {s1_think_tokens} tokens | 提取: '{s1_parsed.extracted_answer}' | 判定:{s1_correct}")
+
+    return CompareResult(
+        question=question,
+        ground_truth=ground_truth,
+        baseline_thinking_tokens=base_think_tokens,
+        baseline_total_tokens=base_total_tokens,
+        baseline_answer=baseline_parsed.extracted_answer,
+        baseline_correct=base_correct,
+        s1_thinking_tokens=s1_think_tokens,
+        s1_total_tokens=s1_total_tokens,
+        s1_answer=s1_parsed.extracted_answer,
+        s1_correct=s1_correct,
+    )
