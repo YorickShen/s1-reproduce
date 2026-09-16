@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from fractions import Fraction
 
+import torch
+from transformers import PreTrainedModel, PreTrainedTokenizer 
+
 # 结构化模型输出结果
 @dataclass
 class ParsedS1Output:
@@ -137,3 +140,33 @@ def is_math_equiv(pred: str, gold: str, tolerance: float = 1e-4) -> bool:
         return abs(pred_num - gold_num) <= tolerance
 
     return False
+
+# 对照组：不施加任何思考预算拦截，模型一旦自己决定输出交卷符或 <|im_end|> 便立即结束
+def baseline_generate(
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        prompt: str,
+        max_new_tokens: int = 1536,
+) -> str:
+    device = model.device
+    input_ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False).to(device)
+    prompt_len = input_ids.shape[1]
+
+    # 获取停止符 <|im_end|> 的token id
+    eos_token_id = tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]
+
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids=input_ids,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=eos_token_id,
+            do_sample=False,
+        )
+
+    # 仅截取模型新生成的 token
+    generated_tokens = outputs[0, prompt_len:]
+
+    return tokenizer.decode(generated_tokens, skip_special_tokens=False)
+
+    
