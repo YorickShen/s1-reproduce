@@ -1,3 +1,11 @@
+import sys
+import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    
 import re
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
@@ -19,20 +27,16 @@ class ParsedS1Output:
 
 # 解析 s1/ChatML 输出格式
 def parse_s1_response(raw_text: str) -> ParsedS1Output:
-    think_pattern = r"<\|im_start\|>think\n(.*?)<\|im_start\|>answer\n"
-    answer_pattern = r"<\|im_start\|>answer\n(.*?)(?:<\|im_end\|>|$)"
-
-    # 提取思考部分
-    think_match = re.search(think_pattern, raw_text, re.DOTALL)
-    thinking_text = think_match.group(1).strip() if think_match else ""
-
-    # 提取作答部分
-    answer_match = re.search(answer_pattern, raw_text, re.DOTALL)
-    answer_text = answer_match.group(1).strip() if answer_match else ""
-
-    if not thinking_text and not answer_text:
-        answer_text = raw_text.strip()
-
+    # 剥去字符串外壳
+    cleaned = raw_text.replace("<|im_end|>", "").strip()
+    if "<|im_start|>answer" in cleaned:
+        thinking_text, answer_text = cleaned.split("<|im_start|>answer", 1)
+        thinking_text = thinking_text.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
+        answer_text = answer_text.strip()
+    else:
+        thinking_text = ""
+        answer_text = cleaned.strip()
+        
     # 提取纯净答案
     target_for_extract = answer_text if answer_text else raw_text
     extracted_answer = extract_math_answer(target_for_extract)        
@@ -70,7 +74,10 @@ def extract_math_answer(text: str) -> str:
     # 优先提取 \boxed{...}
     boxed = _extract_boxed_content(text)
     if boxed is not None:
-        raw_ans = boxed
+        ans = boxed.strip("$").strip()
+        if "=" in ans:
+            ans = ans.split("=")[-1].strip()
+        return ans
     else:
         # 提取常见结论句型("The final answer is...", "#### ...")
         patterns = [
@@ -91,12 +98,14 @@ def extract_math_answer(text: str) -> str:
             raw_ans = lines[-1] if lines else ""
 
     # 符号清洗
-    ans = raw_ans.strip()
-    ans = ans.strip("$").strip()
-    ans = ans.rstrip(".").strip()
-    if ans.lower().startswith("x = ") or ans.lower().startswith("x="):
-        ans = ans.split("=", 1)[-1].strip()
-
+    ans = raw_ans.replace("<|im_end|>", "").replace(r"\(", "").replace(r"\)", "").strip()
+    ans = ans.strip("$").strip().rstrip(".").strip()
+    if "=" in ans:
+        ans = ans.split("=")[-1].strip()
+        
+    nums = re.findall(r"[-+]?\d*\.?\d+", ans)
+    if nums:
+        ans = nums[-1]
     return ans
 
 # 避免假错报，比如\frac{1}{2}与0.5完全等价，如果直接用 == 判定结果，容易判定为 False ，假错报
@@ -273,39 +282,50 @@ def run_benchmark_comparison(
         )
         results.append(res)
 
-    print("\n[*] 评测执行完毕，正在汇总实验数据...\n")
-    print("=" * 80)
-    print("表 1 ：模型输出正确性与推理 Token 开销对比".center(80))
-    print("=" * 80)
+    header = "| Idx | Model / Strategy    | Target | Prediction | Thinking Tokens | Evaluation |"
 
-    print(f"{'序号':^6}  {'真实标签':^10}  {'----------- Baseline 模型 -----------':^32}  {'----------- s1 Forcing 模型 ----------':^32}")
-    header = f"{'Idx':^6}  {'Target':^10}  {'预测输出':^12}  {'思考Token':^10}  {'判定':^6}  {'预测输出':^12}  {'思考Token':^10}  {'判定':^6}"
+    print("\n[*] 评测执行完毕，正在汇总实验数据...\n")
+    print("=" * len(header))
+    print("表 1 ：各样本详细推理效果对比".center(len(header)))
+    print("=" * len(header))
+
     print(header)
-    print("-" * 80)
+    print("-" * len(header))
 
     for idx, r in enumerate(results, 1):
-        b_acc = "1" if r.baseline_correct else "0"
-        s1_acc = "1" if r.baseline_correct else "0"
+        b_acc = "PASS" if r.baseline_correct else "FAIL"
+        s1_acc = "PASS" if r.s1_correct else "FAIL"
 
         # 字段截断保护
-        gt_str = (str(r.ground_truth)[:8] + "..") if len(str(r.ground_truth)) > 10 else str(r.ground_truth)
-        b_ans = (str(r.baseline_answer)[:10] + "..") if len(str(r.baseline_answer)) > 12 else str(r.baseline_answer)
-        s1_ans = (str(r.s1_answer)[:10] + "..") if len(str(r.s1_answer)) > 12 else str(r.s1_answer)
+        gt_str = (str(r.ground_truth)[:6])
+        b_ans = (str(r.baseline_answer)[:10]) 
+        s1_ans = (str(r.s1_answer)[:10]) 
 
-        print(f"{idx:^6}  {gt_str:^10}  {b_ans:^12}  {r.baseline_thinking_tokens:^10}  {b_acc:^6}  {s1_ans:^12}  {r.s1_thinking_tokens:^10}  {s1_acc:^6}")
-
+        # 第一行： baseline 模型
+        print(f"| {idx:^3} | {'Baseline ':<19} | {gt_str:^6} | {b_ans:^10} | {r.baseline_thinking_tokens:^15} | {b_acc:^10} |")
+        # 第二行： s1 Budget Forcing 模型
+        print(f"| {'':^3} | {'s1 ':<19} | {gt_str:^6} | {s1_ans:^10} | {r.s1_thinking_tokens:^15} | {s1_acc:^10} |")
+        print("-" * len(header))
+        
     # 计算宏观统计指标
     base_correct_cnt = sum(1 for r in results if r.baseline_correct)
     s1_correct_cnt = sum(1 for r in results if r.s1_correct)
     base_avg_think = sum(r.baseline_thinking_tokens for r in results) / len(results)
     s1_avg_think = sum(r.s1_thinking_tokens for r in results) / len(results)
 
-    print("-" * 80)
     b_acc_rate = f"{base_correct_cnt / len(results) * 100:.1f}%"
     s1_acc_rate = f"{s1_correct_cnt / len(results) * 100:.1f}%"
-    print(f"{'准确率':^6}  {'-':^10}  {'-':^12}  {'-':^10}  {b_acc_rate:^6}  {'-':^12}  {'-':^10}  {s1_acc_rate:^6}")
-    print(f"{'均值':^6}  {'-':^10}  {'-':^12}  {f'{base_avg_think:.1f}':^10}  {'-':^6}  {'-':^12}  {f'{s1_avg_think:.1f}':^10}  {'-':^6}")
-    print("=" * 80)
+    
+    
+    sum_header = "| Model Strategy      | Accuracy (准确率) | Avg Thinking Tokens (思考均值) |"
+    print("\n" + "=" *len(sum_header))
+    print("表 2 ：宏观统计指标对比".center(len(sum_header)))
+    print("=" * len(sum_header))
+    print(sum_header)
+    print("-" * len(sum_header))
+    print(f"| {'Baseline':<19} | {f'{base_correct_cnt}/{len(results)}({b_acc_rate})':^17} | {f'{base_avg_think:.1f} tokens':^30} |")
+    print(f"| {'s1 ':<19} | {f'{s1_correct_cnt}/{len(results)}({s1_acc_rate})':^17} | {f'{s1_avg_think:.1f} tokens':^30} |")
+    print("=" * len(sum_header))
 
     # 统计分析
     print("【计算开销分析】:")
@@ -318,5 +338,59 @@ def run_benchmark_comparison(
 
     return results
 
+if __name__ == "__main__":
+    from peft import PeftModel
+    from src.config import S1TrainConfig
+    from src.train import get_tokenizer
+    from src.budget_forcing import load_clean_base_model
 
+    print("=" * 80)
+    print("[*] 阶段 1: 数学答案等价性判断")
+    print("=" * 80)
+    assert is_math_equiv("0.5", r"\frac{1}{2}") == True
+    assert is_math_equiv("42.0", "42") == True
+    assert is_math_equiv("6", "7") == False
+    assert extract_math_answer(r"经过计算得出 \boxed{\frac{3}{4}}。") == r"\frac{3}{4}"
+    print("[*] 基础数学答案提取与等价性判断全部通过\n")
+    
+    print("=" * 80)
+    print("[*] 阶段 2: 正在加载 4-bit 量化基座模型与微调权重...")
+    print("=" * 80)
+    cfg = S1TrainConfig()
+    tokenizer = get_tokenizer(cfg)
+    base_model = load_clean_base_model(cfg)
 
+    # 挂载第 2 步中微调出的 checkpoint-5
+    project_root = Path(__file__).resolve().parent.parent
+    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-5"
+    if checkpoint_dir.exists():
+        print(f"[*] 挂载微调 LoRA 权重: {checkpoint_dir}")
+        model = PeftModel.from_pretrained(base_model, str(checkpoint_dir))
+    else:
+        print("[!] 未检测到微调权重，使用纯净基座模型")
+        model = base_model
+
+    model.eval()
+
+    #  1 道经典一元一次方程数学题
+    eval_samples = [
+        {
+            "question": "If 2x + 5 = 17, what is the value of x? Solve step by step.",
+            "ground_truth": "6",
+        },
+    ]
+
+    # 慢思考预算超参数
+    forcing_config = BudgetForcingConfig(
+        thinking_budget=128,
+        turn_prompt="\nWait, let me rethink and double check my calculation step by step:\n"
+    )
+    
+    # 启动对比评测
+    run_benchmark_comparison(
+        model=model,
+        tokenizer=tokenizer,
+        samples=eval_samples,
+        budget_config=forcing_config,
+
+    )
