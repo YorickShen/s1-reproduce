@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fractions import Fraction
 
 import torch
@@ -246,3 +246,77 @@ def evaluate_single_sample(
         s1_answer=s1_parsed.extracted_answer,
         s1_correct=s1_correct,
     )
+
+# 测评函数
+def run_benchmark_comparison(
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        samples: List[Dict[str, str]],
+        budget_config: Optional[BudgetForcingConfig] = None,
+) -> List[CompareResult]:
+
+    results = []
+
+    print("\n" + "=" * 80)
+    print("【实验评估】 开始执行 Baseline 与 s1 评测对比")
+    print(f"评测样本总数：{len(samples)}")
+    print("=" * 80)
+
+    for idx, sample in enumerate(samples, 1):
+        print(f"[*] 评测进度 [{idx:03d}/{len(samples):03d}] ...", end="\r", flush=True)
+        res = evaluate_single_sample(
+            model=model,
+            tokenizer=tokenizer,
+            question=sample["question"],
+            ground_truth=sample["ground_truth"],
+            budget_config=budget_config,
+        )
+        results.append(res)
+
+    print("\n[*] 评测执行完毕，正在汇总实验数据...\n")
+    print("=" * 80)
+    print("表 1 ：模型输出正确性与推理 Token 开销对比".center(80))
+    print("=" * 80)
+
+    print(f"{'序号':^6}  {'真实标签':^10}  {'----------- Baseline 模型 -----------':^32}  {'----------- s1 Forcing 模型 ----------':^32}")
+    header = f"{'Idx':^6}  {'Target':^10}  {'预测输出':^12}  {'思考Token':^10}  {'判定':^6}  {'预测输出':^12}  {'思考Token':^10}  {'判定':^6}"
+    print(header)
+    print("-" * 80)
+
+    for idx, r in enumerate(results, 1):
+        b_acc = "1" if r.baseline_correct else "0"
+        s1_acc = "1" if r.baseline_correct else "0"
+
+        # 字段截断保护
+        gt_str = (str(r.ground_truth)[:8] + "..") if len(str(r.ground_truth)) > 10 else str(r.ground_truth)
+        b_ans = (str(r.baseline_answer)[:10] + "..") if len(str(r.baseline_answer)) > 12 else str(r.baseline_answer)
+        s1_ans = (str(r.s1_answer)[:10] + "..") if len(str(r.s1_answer)) > 12 else str(r.s1_answer)
+
+        print(f"{idx:^6}  {gt_str:^10}  {b_ans:^12}  {r.baseline_thinking_tokens:^10}  {b_acc:^6}  {s1_ans:^12}  {r.s1_thinking_tokens:^10}  {s1_acc:^6}")
+
+    # 计算宏观统计指标
+    base_correct_cnt = sum(1 for r in results if r.baseline_correct)
+    s1_correct_cnt = sum(1 for r in results if r.s1_correct)
+    base_avg_think = sum(r.baseline_thinking_tokens for r in results) / len(results)
+    s1_avg_think = sum(r.s1_thinking_tokens for r in results) / len(results)
+
+    print("-" * 80)
+    b_acc_rate = f"{base_correct_cnt / len(results) * 100:.1f}%"
+    s1_acc_rate = f"{s1_correct_cnt / len(results) * 100:.1f}%"
+    print(f"{'准确率':^6}  {'-':^10}  {'-':^12}  {'-':^10}  {b_acc_rate:^6}  {'-':^12}  {'-':^10}  {s1_acc_rate:^6}")
+    print(f"{'均值':^6}  {'-':^10}  {'-':^12}  {f'{base_avg_think:.1f}':^10}  {'-':^6}  {'-':^12}  {f'{s1_avg_think:.1f}':^10}  {'-':^6}")
+    print("=" * 80)
+
+    # 统计分析
+    print("【计算开销分析】:")
+    print(f"  • Baseline 模型  : 准确率 = {base_correct_cnt}/{len(results)} ({b_acc_rate}) | 平均推理长度 = {base_avg_think:.1f} Tokens")
+    print(f"  • s1 Forcing 模型: 准确率 = {s1_correct_cnt}/{len(results)} ({s1_acc_rate}) | 平均推理长度 = {s1_avg_think:.1f} Tokens")
+    if base_avg_think > 0:
+        expansion = (s1_avg_think - base_avg_think) / base_avg_think * 100
+        print(f"  • 推理期算力扩展比 : {expansion:+.1f}%")
+    print("=" * 80 + "\n")
+
+    return results
+
+
+
