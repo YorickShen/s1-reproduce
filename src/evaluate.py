@@ -1,6 +1,7 @@
 import sys
 import os
 from pathlib import Path
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -13,6 +14,7 @@ from fractions import Fraction
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer 
+from datasets import load_dataset
 
 from src.dataset import format_s1_prompt_and_response
 from src.budget_forcing import budget_forcing_generate, BudgetForcingConfig
@@ -243,6 +245,12 @@ def evaluate_single_sample(
     s1_correct = is_math_equiv(s1_parsed.extracted_answer, ground_truth)
     print(f"[s1 结果] 思考: {s1_think_tokens} tokens | 提取: '{s1_parsed.extracted_answer}' | 判定:{s1_correct}")
 
+    # 打印思考链末尾400字，查看反思细节
+    if s1_parsed.thinking_text:
+        print("\n" + "=" * 35 + " [s1 思考切片] " + "=" * 35)
+        print(s1_parsed.thinking_text[-500:])
+        print("=" * 90 + "\n")
+
     return CompareResult(
         question=question,
         ground_truth=ground_truth,
@@ -255,6 +263,33 @@ def evaluate_single_sample(
         s1_answer=s1_parsed.extracted_answer,
         s1_correct=s1_correct,
     )
+
+# 导入数据集
+def load_benchmark_from_s1K(num_samples: int = 3, source_filter: str = "AIME") -> List[Dict[str, str]]:
+    print(f"\n[*] 正在从本地 s1K-1.1 数据集动态抽取 {num_samples} 道  [{source_filter}] 竞赛题...")
+    
+    # 直接利用本地缓存
+    ds = load_dataset("simplescaling/s1K-1.1", split="train")
+    samples = []
+    
+    for item in ds:
+        # 过滤来源（如 AIME 高阶数学竞赛）
+        if source_filter and source_filter not in item.get("source_type", ""):
+            continue
+        
+        # 用我们之前写好的深度切片器提取标准答案
+        gold_ans = extract_math_answer(item.get("solution", ""))
+        if gold_ans:
+            samples.append({
+                "question": item["question"],
+                "ground_truth": gold_ans,
+            })
+            
+        if len(samples) >= num_samples:
+            break
+        
+    print(f"[*] 成功抽取出 {len(samples)} 道数学竞赛评测样本!\n")
+    return samples    
 
 # 测评函数
 def run_benchmark_comparison(
@@ -373,16 +408,12 @@ if __name__ == "__main__":
     model.eval()
 
     #  1 道经典一元一次方程数学题
-    eval_samples = [
-        {
-            "question": "If 2x + 5 = 17, what is the value of x? Solve step by step.",
-            "ground_truth": "6",
-        },
-    ]
+    eval_samples = load_benchmark_from_s1K(num_samples=3, source_filter="AIME")
 
     # 慢思考预算超参数
     forcing_config = BudgetForcingConfig(
-        thinking_budget=128,
+        thinking_budget=1024,
+        max_new_tokens=2048,
         turn_prompt="\nWait, let me rethink and double check my calculation step by step:\n"
     )
     
