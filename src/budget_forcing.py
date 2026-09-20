@@ -125,9 +125,12 @@ def budget_forcing_generate(
         # 还剩多少思考 token
         remaining_budget = config.thinking_budget - thinking_tokens_count
 
+        # 分段步长控制（单次最多生成384tokens）
+        step_budget = min(remaining_budget, 384)
+
         ouputs = model.generate(
             input_ids=current_ids,
-            max_new_tokens=remaining_budget,
+            max_new_tokens=step_budget,
             stopping_criteria=stopping_criteria,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=eos_token_id,
@@ -158,7 +161,12 @@ def budget_forcing_generate(
             current_ids = current_ids[:,:-1]
             current_ids = torch.cat([current_ids, turn_tokens], dim=1)
         else:
-            pass
+            # 若本轮步长耗尽但未交卷，且总预算未满
+            cur_thinking = current_ids.shape[1] - prompt_len
+            if cur_thinking < config.thinking_budget:
+                intercept_count += 1
+                print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
+                current_ids = torch.cat([current_ids, turn_tokens], dim=1)
 
     # 计算模型还能使用的剩余最大token配额
     total_generated_so_far = current_ids.shape[1] - prompt_len
