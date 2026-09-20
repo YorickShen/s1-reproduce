@@ -1,5 +1,9 @@
+import os
 import sys
 from pathlib import Path
+
+# 离线挂载
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 # 确保在任意工作目录下运行都能正确定位项目根目录
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -8,6 +12,7 @@ import torch
 from transformers import (
     AutoTokenizer, 
     BitsAndBytesConfig, 
+
     AutoModelForCausalLM, 
     DataCollatorForSeq2Seq, 
     TrainingArguments, 
@@ -15,7 +20,6 @@ from transformers import (
     TrainerCallback,
     )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-
 from src.config import S1TrainConfig
 from src.dataset import load_s1_dataset, tokenize_s1_sample
 
@@ -138,9 +142,10 @@ def train(config:S1TrainConfig, max_samples: int = None):
         bf16=config.bf16,
         max_steps=config.max_steps,
         save_strategy=config.save_strategy,
+        save_steps=config.save_steps,
         num_train_epochs=config.epochs,
         logging_steps=config.logging_steps,
-        report_to="None",
+        report_to="none",
     )
 
     # 组装Trainer
@@ -159,4 +164,21 @@ def train(config:S1TrainConfig, max_samples: int = None):
     print(f"[*] 训练完毕，正在保存模型权重至：{config.output_dir}...")
     trainer.save_model()
     print("[*] 模型保存成功!")
+
+
+if __name__ == "__main__":
+    # 实例化配置
+    cfg = S1TrainConfig()
+
+    print("=" * 60)
+    print("[*] 正在启动 5-step 安全冒烟微调 (S1 LoRA Smoke Test)...")
+    print(f"[*] 基座模型: {cfg.model_name}")
+    print(f"[*] 物理 Batch Size: {cfg.per_device_train_batch_size}")
+    print(f"[*] 梯度累积步数: {cfg.gradient_accumulation_steps}")
+    print(f"[*] 目标步数: {cfg.max_steps} steps")
+    print(f"[*] 优化器: {cfg.optim}")
+    print("=" * 60)
+
+    # 抽取 32 条长思维链样本，10 步安全高效跑通并存盘
+    train(cfg, max_samples=32)
 

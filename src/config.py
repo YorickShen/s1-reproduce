@@ -29,12 +29,14 @@ class S1TrainConfig:
     max_seq_length: int = 2048
     learning_rate: float = 1e-4
     per_device_train_batch_size: int = 1
-    gradient_accumulation_steps: int = 16
-    epochs: int = 5
+    gradient_accumulation_steps: int = 1
+    epochs: int = 1
     optim: str = "paged_adamw_8bit"
     logging_steps: int = 1
-    save_strategy: str = "epoch"
+    save_strategy: str = "steps"
+    save_steps: int = 25
     bf16: bool = True
-    max_steps: int = -1
+    max_steps: int = 25
+
 
 
