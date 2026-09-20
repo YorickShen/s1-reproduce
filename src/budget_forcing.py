@@ -39,7 +39,7 @@ class BudgetForcingConfig:
 
     # 标记定义
     think_start_token: str = "<|im_start|>think\n"
-    answer_start_token: str = "<|im_start|>answer"
+    answer_start_token: str = "\n<|im_start|>answer\n"
     eos_token: str = "<|im_end|>"
 
 # 哨兵类，在目标 token 序列停止
