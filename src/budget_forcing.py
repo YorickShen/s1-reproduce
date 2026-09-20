@@ -42,6 +42,9 @@ class BudgetForcingConfig:
     answer_start_token: str = "\n<|im_start|>answer\n"
     eos_token: str = "<|im_end|>"
 
+    # 前向推理最大步长
+    step_chunk_size: int =256
+
 # 哨兵类，在目标 token 序列停止
 class StopOnTokenSequenceCriteria(StoppingCriteria):
     def __init__(self, target_sequence: List[int], device: torch.device):
@@ -125,8 +128,8 @@ def budget_forcing_generate(
         # 还剩多少思考 token
         remaining_budget = config.thinking_budget - thinking_tokens_count
 
-        # 分段步长控制（单次最多生成384tokens）
-        step_budget = min(remaining_budget, 384)
+        # 分段步长控制
+        step_budget = min(remaining_budget, config.step_chunk_size)
 
         ouputs = model.generate(
             input_ids=current_ids,

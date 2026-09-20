@@ -461,7 +461,8 @@ if __name__ == "__main__":
             "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
             "ground_truth": "15",
             "budget_config": BudgetForcingConfig(
-                thinking_budget=384,
+                thinking_budget=600,
+                step_chunk_size=256,
                 max_new_tokens=1024,
                 turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
             ),
@@ -471,7 +472,8 @@ if __name__ == "__main__":
             "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
             "ground_truth": "13.5",
             "budget_config": BudgetForcingConfig(
-                thinking_budget=384,
+                thinking_budget=600,
+                step_chunk_size=256,
                 max_new_tokens=1024,
                 turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
             ),
@@ -481,8 +483,9 @@ if __name__ == "__main__":
             "question": "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step.",
             "ground_truth": "33",
             "budget_config": BudgetForcingConfig(
-                thinking_budget=384,
-                max_new_tokens=1024,
+                thinking_budget=1250,
+                step_chunk_size=384,
+                max_new_tokens=2048,
                 turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
             ),
         },
