@@ -32,16 +32,39 @@ def parse_s1_response(raw_text: str) -> ParsedS1Output:
     # 剥去字符串外壳
     cleaned = raw_text.replace("<|im_end|>", "").strip()
     if "<|im_start|>answer" in cleaned:
+        # 1.ChatML 双舱格式
         thinking_text, answer_text = cleaned.split("<|im_start|>answer", 1)
         thinking_text = thinking_text.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
         answer_text = answer_text.strip()
+
+        # 优先在作答舱提取答案，若被意外截断为空，再兜底全文扫描
+        extracted_answer = extract_math_answer(answer_text)
+        if not extracted_answer:
+            extracted_answer = extract_math_answer(cleaned)
     else:
-        thinking_text = ""
-        answer_text = cleaned.strip()
-        
-    # 提取纯净答案
-    target_for_extract = answer_text if answer_text else raw_text
-    extracted_answer = extract_math_answer(target_for_extract)        
+        # 2.Baseline 自由作答
+        thinking_text = cleaned.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
+
+        # 只认可真正的“确定性结论”
+        boxed = _extract_boxed_content(cleaned)
+        if boxed is not None:
+            # 推导中存在标准的 \boxed{...}
+            extracted_answer = extract_math_answer(cleaned)
+            answer_text = f"\\boxed{{{boxed}}}"
+        else:
+            # 推导中存在显式结论句型（如"the answer is..."，"####"）
+            patterns = [
+                r"(?:the\s+final\s+answer\s+is|the\s+answer\s+is|final\s+answer:?)\s*([^\n\.\$]+)",
+                r"####\s*([^\n]+)",
+            ]
+            has_explicit_ans = any(re.search(p, cleaned, re.IGNORECASE) for p in patterns)
+            if has_explicit_ans:
+                extracted_answer = extract_math_answer(cleaned)
+                answer_text = extracted_answer
+            else:
+                # 既无boxed，也无结论句
+                extracted_answer = ""
+                answer_text = ""    
 
     return ParsedS1Output(
         raw_text=raw_text,
@@ -395,9 +418,9 @@ if __name__ == "__main__":
     tokenizer = get_tokenizer(cfg)
     base_model = load_clean_base_model(cfg)
 
-    # 挂载第 2 步中微调出的 checkpoint-5
+    # 挂载经过 25 步深度训练的 checkpoint-25 强力适配器
     project_root = Path(__file__).resolve().parent.parent
-    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-5"
+    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-25"
     if checkpoint_dir.exists():
         print(f"[*] 挂载微调 LoRA 权重: {checkpoint_dir}")
         model = PeftModel.from_pretrained(base_model, str(checkpoint_dir))
@@ -407,14 +430,20 @@ if __name__ == "__main__":
 
     model.eval()
 
-    #  1 道经典一元一次方程数学题
-    eval_samples = load_benchmark_from_s1K(num_samples=3, source_filter="AIME")
+    # 终极试金石：s1K 经典对数等比数列竞赛题（包含苛刻完全平方数约束）
+    eval_samples = [
+        {
+            "category": "Algebra/Number Theory (等比完全平方约束)",
+            "question": "It is given that \\log_{6}a + \\log_{6}b + \\log_{6}c = 6, where a, b, and c are positive integers that form an increasing geometric sequence and b - a is the square of an integer. Find a + b + c.",
+            "ground_truth": "111",
+        },
+    ]
 
-    # 慢思考预算超参数
+    # 慢思考预算超参数：设为 512 tokens，给模型充裕的平方数验算空间
     forcing_config = BudgetForcingConfig(
-        thinking_budget=1024,
-        max_new_tokens=2048,
-        turn_prompt="\nWait, let me rethink and double check my calculation step by step:\n"
+        thinking_budget=512,
+        max_new_tokens=1536,
+        turn_prompt="\nWait, let me rethink and double check all conditions, especially that b - a must be a non-zero perfect square:\n"
     )
     
     # 启动对比评测
@@ -423,5 +452,4 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         samples=eval_samples,
         budget_config=forcing_config,
-
     )
