@@ -338,17 +338,21 @@ def run_benchmark_comparison(
     print("=" * 80)
 
     for idx, sample in enumerate(samples, 1):
-        print(f"[*] 评测进度 [{idx:03d}/{len(samples):03d}] ...", end="\r", flush=True)
+        print(f"\n[*] 评测进度 [{idx:03d}/{len(samples):03d}] ...", end="\r", flush=True)
+        # 支持样本级别独立的 budget_config 配置，未指定则使用全局默认
+        sample_budget = sample.get("budget_config", budget_config)
         res = evaluate_single_sample(
             model=model,
             tokenizer=tokenizer,
             question=sample["question"],
             ground_truth=sample["ground_truth"],
-            budget_config=budget_config,
+            budget_config=sample_budget,
         )
         results.append(res)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    header = "| Idx | Model / Strategy    | Target | Prediction | Thinking Tokens | Evaluation |"
+    header = "| Idx | Category / Model    | Target | Prediction | Thinking Tokens | Evaluation |"
 
     print("\n[*] 评测执行完毕，正在汇总实验数据...\n")
     print("=" * len(header))
@@ -361,16 +365,18 @@ def run_benchmark_comparison(
     for idx, r in enumerate(results, 1):
         b_acc = "PASS" if r.baseline_correct else "FAIL"
         s1_acc = "PASS" if r.s1_correct else "FAIL"
+        category = samples[idx - 1].get("category", "General")
 
         # 字段截断保护
         gt_str = (str(r.ground_truth)[:6])
         b_ans = (str(r.baseline_answer)[:10]) 
         s1_ans = (str(r.s1_answer)[:10]) 
 
-        # 第一行： baseline 模型
-        print(f"| {idx:^3} | {'Baseline ':<19} | {gt_str:^6} | {b_ans:^10} | {r.baseline_thinking_tokens:^15} | {b_acc:^10} |")
+        # 第一行： baseline 模型 (显示分类)
+        print(f"| {idx:^3} | {category[:19]:<19} | {gt_str:^6} | {'':^10} | {'':^15} | {'':^10} |")
+        print(f"|     | {'  Baseline':<19} | {gt_str:^6} | {b_ans:^10} | {r.baseline_thinking_tokens:^15} | {b_acc:^10} |")
         # 第二行： s1 Budget Forcing 模型
-        print(f"| {'':^3} | {'s1 ':<19} | {gt_str:^6} | {s1_ans:^10} | {r.s1_thinking_tokens:^15} | {s1_acc:^10} |")
+        print(f"|     | {'  s1 Forcing':<19} | {gt_str:^6} | {s1_ans:^10} | {r.s1_thinking_tokens:^15} | {s1_acc:^10} |")
         print("-" * len(header))
         
     # 计算宏观统计指标
@@ -438,26 +444,62 @@ if __name__ == "__main__":
 
     model.eval()
 
-    # 终极试金石：s1K 经典对数等比数列竞赛题（包含苛刻完全平方数约束）
+    # 黄金适度区间 (Goldilocks Zone) 四大试金石批次评测套件
     eval_samples = [
         {
-            "category": "Algebra/Number Theory",
+            "category": "Algebra (s1K-325)",
             "question": "It is given that \\log_{6}a + \\log_{6}b + \\log_{6}c = 6, where a, b, and c are positive integers that form an increasing geometric sequence and b - a is the square of an integer. Find a + b + c.",
             "ground_truth": "111",
+            "budget_config": BudgetForcingConfig(
+                thinking_budget=1250,
+                max_new_tokens=2048,
+                turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
+            ),
+        },
+        {
+            "category": "Combinatorics (s1K-170)",
+            "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
+            "ground_truth": "15",
+            "budget_config": BudgetForcingConfig(
+                thinking_budget=384,
+                max_new_tokens=1024,
+                turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
+            ),
+        },
+        {
+            "category": "Geometry (s1K-53)",
+            "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
+            "ground_truth": "13.5",
+            "budget_config": BudgetForcingConfig(
+                thinking_budget=384,
+                max_new_tokens=1024,
+                turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
+            ),
+        },
+        {
+            "category": "Number Theory (Factor)",
+            "question": "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step.",
+            "ground_truth": "33",
+            "budget_config": BudgetForcingConfig(
+                thinking_budget=384,
+                max_new_tokens=1024,
+                turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
+            ),
         },
     ]
 
-    # 慢思考预算超参数：1350 tokens 充裕空间，让连乘与最后求和完全收敛
-    forcing_config = BudgetForcingConfig(
-        thinking_budget=1250,
-        max_new_tokens=2048,
-        turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
+    # 通用默认预算配置
+    default_forcing_config = BudgetForcingConfig(
+        thinking_budget=384,
+        max_new_tokens=1024,
+        turn_prompt="\nWait, let me rethink this problem carefully and verify my calculation step by step:\n",
     )
     
-    # 启动对比评测
+    # 启动多试金石流水线对比评测
     run_benchmark_comparison(
         model=model,
         tokenizer=tokenizer,
         samples=eval_samples,
-        budget_config=forcing_config,
+        budget_config=default_forcing_config,
     )
+
