@@ -1,13 +1,15 @@
 import sys
 import os
 from pathlib import Path
-os.environ["HF_HUB_OFFLINE"] = "1"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
 import re
+import json
+import argparse
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 from fractions import Fraction
@@ -280,6 +282,10 @@ def evaluate_single_sample(
     s1_think_tokens = len(tokenizer.encode(s1_parsed.thinking_text, add_special_tokens=False))
     s1_total_tokens = len(tokenizer.encode(s1_raw, add_special_tokens=False))
     s1_correct = is_math_equiv(s1_parsed.extracted_answer, ground_truth)
+    print("\n" + "=" * 60)
+    print("【草稿纸抓包】 s1 模型的最终作答原文 (Answer Text):")
+    print(s1_parsed.answer_text if s1_parsed.answer_text else "[作答舱为空，仍在思考舱]")
+    print("=" * 60)
     print(f"[s1 结果] 思考: {s1_think_tokens} tokens | 提取: '{s1_parsed.extracted_answer}' | 判定:{s1_correct}")
 
     return CompareResult(
@@ -328,29 +334,85 @@ def run_benchmark_comparison(
         tokenizer: PreTrainedTokenizer,
         samples: List[Dict[str, str]],
         budget_config: Optional[BudgetForcingConfig] = None,
+        output_jsonl: Optional[str] = None,
+        checkpoint_name: str = "default",
 ) -> List[CompareResult]:
 
     results = []
 
+    # 扫描已有记录
+    evaluated_keys = set()
+    if output_jsonl and Path(output_jsonl).exists():
+        with open(output_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        record = json.loads(line)
+                        if record.get("checkpoint") == checkpoint_name:
+                            evaluated_keys.add(record.get(question))
+                    except Exception:
+                        pass
+
     print("\n" + "=" * 80)
-    print("【实验评估】 开始执行 Baseline 与 s1 评测对比")
-    print(f"评测样本总数：{len(samples)}")
+    print(f"【实验评估】 开始执行 Baseline 与 s1 评测对比 (权重：{checkpoint_name})")
+    print(f"评测样本总数：{len(samples)} | 已完成跳过：{len(evaluated_keys)}")
+    if output_jsonl:
+        print(f"流式存盘路径：{output_jsonl}")
     print("=" * 80)
 
     for idx, sample in enumerate(samples, 1):
-        print(f"\n[*] 评测进度 [{idx:03d}/{len(samples):03d}] ...", end="\r", flush=True)
-        # 支持样本级别独立的 budget_config 配置，未指定则使用全局默认
+        question=sample["question"]
+        ground_truth=sample["ground_truth"]
+        category = sample.get("category", "General")
+
+        # 已经评测过的题目直接跳过
+        if question in evaluated_keys:
+            print(f"\n[*] 评测进度[{idx:03d}/{len(samples):03d}] [skip 命中缓存] {category} 之前已评测，跳过")
+            continue
+
+        print(f"\n[*] 评测进度 [{idx:03d}/{len(samples):03d}] 正在评测:{category} ...")
+        
         sample_budget = sample.get("budget_config", budget_config)
         res = evaluate_single_sample(
             model=model,
             tokenizer=tokenizer,
-            question=sample["question"],
-            ground_truth=sample["ground_truth"],
+            question=question,
+            ground_truth=ground_truth,
             budget_config=sample_budget,
         )
         results.append(res)
+        
+        #流式存盘
+        if output_jsonl:
+            record = {
+                "timestamp": datetime.now().isoformat(),
+                "checkpoint": checkpoint_name,
+                "category": category,
+                "question": question,
+                "ground_truth": ground_truth,
+                "baseline": {
+                    "thinking_tokens": res.baseline_thinking_tokens,
+                    "answer": res.baseline_answer,
+                    "correct": res.baseline_correct
+                },
+                "s1_forcing": {
+                    "thinking_tokens": res.s1_think_tokens,
+                    "answer": res.s1_answer,
+                    "correct": res.s1_correct
+                }
+            }
+            Path(output_jsonl).parent.mkdir(parent=True, exist_ok=True)
+            with open(output_jsonl, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+            print(f"[*] [Streaming] 本题推导结果已经写入磁盘：{output_jsonl}")        
+        
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    if not results:
+        print("\n[*] 本轮所有样本此前都已评测过，无需重复计算")
+        return results
 
     header = "| Idx | Category / Model    | Target | Prediction | Thinking Tokens | Evaluation |"
 
@@ -426,21 +488,23 @@ if __name__ == "__main__":
     print("[*] 基础数学答案提取与等价性判断全部通过\n")
     
     print("=" * 80)
-    print("[*] 阶段 2: 正在加载 4-bit 量化基座模型与微调权重...")
+    print("[*] 阶段 2: 正在加载基座模型与微调权重...")
     print("=" * 80)
     cfg = S1TrainConfig()
     tokenizer = get_tokenizer(cfg)
     base_model = load_clean_base_model(cfg)
 
-    # 挂载经过 25 步深度训练的 checkpoint-25 强力适配器
+    # 挂载经过深度训练的 checkpoint 适配器
     project_root = Path(__file__).resolve().parent.parent
-    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-25"
+    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-63"
     if checkpoint_dir.exists():
         print(f"[*] 挂载微调 LoRA 权重: {checkpoint_dir}")
         model = PeftModel.from_pretrained(base_model, str(checkpoint_dir))
+        ckpt_display_name = "checkpoint-63"
     else:
         print("[!] 未检测到微调权重，使用纯净基座模型")
         model = base_model
+        ckpt_display_name = "0-step-Base"
 
     model.eval()
 
@@ -452,7 +516,7 @@ if __name__ == "__main__":
             "ground_truth": "111",
             "budget_config": BudgetForcingConfig(
                 thinking_budget=1250,
-                max_new_tokens=2048,
+                max_new_tokens=2560,
                 turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
             ),
         },
@@ -461,9 +525,9 @@ if __name__ == "__main__":
             "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
             "ground_truth": "15",
             "budget_config": BudgetForcingConfig(
-                thinking_budget=600,
+                thinking_budget=1250,
                 step_chunk_size=256,
-                max_new_tokens=1024,
+                max_new_tokens=2560,
                 turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
             ),
         },
@@ -472,9 +536,9 @@ if __name__ == "__main__":
             "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
             "ground_truth": "13.5",
             "budget_config": BudgetForcingConfig(
-                thinking_budget=600,
+                thinking_budget=1250,
                 step_chunk_size=256,
-                max_new_tokens=1024,
+                max_new_tokens=2560,
                 turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
             ),
         },
@@ -485,7 +549,7 @@ if __name__ == "__main__":
             "budget_config": BudgetForcingConfig(
                 thinking_budget=1250,
                 step_chunk_size=384,
-                max_new_tokens=2048,
+                max_new_tokens=2560,
                 turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
             ),
         },

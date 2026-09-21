@@ -6,8 +6,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ["HF_HUB_OFFLINE"] = "1"
-
 from dataclasses import dataclass
 from typing import List, Optional
 import torch
@@ -63,24 +61,32 @@ class StopOnTokenSequenceCriteria(StoppingCriteria):
         tail = input_ids[0,-self.seq_len:]
         return torch.equal(tail, self.target_tensor)
 
-#  加载纯净的 4-bit 量化基座模型，不提前包裹未经训练的 LoRA 壳
+#  加载纯净量化基座模型，不提前包裹未经训练的 LoRA 壳
 def load_clean_base_model(config: S1TrainConfig):
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=config.load_in_4bit,
-        bnb_4bit_quant_type=config.bnb_4bit_quant_type,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True
-    )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        local_files_only=True
-    )
-
+    if config.load_in_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=config.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="sdpa"
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="sdpa"
+        )
+        
     return model
 
 # s1论文核心推理算法

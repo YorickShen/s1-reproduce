@@ -12,7 +12,7 @@ class S1TrainConfig:
     model_name: str = "Qwen/Qwen2.5-7B-Instruct"
 
     # 4bit 量化配置
-    load_in_4bit: bool = True
+    load_in_4bit: bool = False
     bnb_4bit_quant_type: str = "nf4"
 
     # LoRA 配置
@@ -26,17 +26,17 @@ class S1TrainConfig:
 
     # 训练超参数
     output_dir: str = str(PROJECT_ROOT/"outputs"/"s1-7b-qlora")
-    max_seq_length: int = 2048
+    max_seq_length: int = 4096
     learning_rate: float = 1e-4
     per_device_train_batch_size: int = 1
-    gradient_accumulation_steps: int = 1
+    gradient_accumulation_steps: int = 16
     epochs: int = 1
-    optim: str = "paged_adamw_8bit"
+    optim: str = "adamw_torch"
     logging_steps: int = 1
     save_strategy: str = "steps"
     save_steps: int = 25
     bf16: bool = True
-    max_steps: int = 25
+    max_steps: int = 63
 
 
 
