@@ -118,9 +118,34 @@ def extract_math_answer(text: str) -> str:
     else:
         # 提取常见结论句型("The final answer is...", "#### ...")
         patterns = [
-            r"(?:the\s+final\s+answer\s+is|the\s+answer\s+is|final\s+answer:?)\s*([^\n\.\$]+)",
-            r"####\s*([^\n]+)",
-            r"a\s*\+\s*b\s*\+\s*c\s*=(?:.*?=\s*|\s*)([0-9]+)",
+            # --- 1. 标准显式答案引导句 (覆盖多种修饰词与介词短语) ---
+            r"(?:the\s+)?(?:final\s+|correct\s+|required\s+|desired\s+|unique\s+|only\s+)?answer\s*(?:to\s+the\s+(?:problem|question)\s*)?(?:is|should\s+be|must\s+be)?\s*[:：=]?\s*\$?\s*([^\n\.\$]+)",
+            r"(?:our|my)\s+(?:final\s+)?answer\s*(?:is|becomes)?\s*[:：=]?\s*\$?\s*([^\n\.\$]+)",
+
+            # --- 2. 标签式与 Markdown 强化标记 (GSM8K, XML, Markdown) ---
+            r"(?:####|\*\*Final\s+Answer(?:\*\*)?|\*\*Answer(?:\*\*)?|Answer\s*:)\s*[:：]?\s*\$?\s*([^\n\.\$]+)",
+
+            # --- 3. 计数与组合数学类结论 (Count / Distinct / Number of) ---
+            r"(?:the\s+)?(?:total\s+number\s+of|number\s+of|total\s+count\s+of|count\s+of|distinct)\s+[a-z\s_\-\{\}\\\*\^]+\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+            r"(?:there\s+are|we\s+(?:have|get|obtain|find))\s+(?:a\s+total\s+of\s+)?([0-9\/\.\-]+)\s+(?:distinct|possible|such|valid|solutions?|numbers?|ways?|values?|cases?|integers?|roots?)",
+            r"(?:gives|leaves\s+us\s+with)\s+([0-9\/\.\-]+)\s+(?:distinct|possible|valid)?\s+(?:solutions?|numbers?|ways?|values?)",
+
+            # --- 4. 代数求和、乘积、极值与取值总结 (Sum / Product / Value / Min / Max) ---
+            r"(?:the\s+)?(?:sum|total\s+sum|product|value|minimum(?:\s+value)?|maximum(?:\s+value)?|min|max)(?:\s+of[^\n:=]+)?\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+            r"(?:the\s+)?(?:sum\s+of\s+all[^\n:=]+)\s*(?:is\s+equal\s+to|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+
+            # --- 5. 平面/立体几何量度总结 (Area / Perimeter / Length / Volume / Angle) ---
+            r"(?:the\s+)?(?:area(?:\s+of\s+[^\n:=]+)?|perimeter|length|volume|radius|diameter)\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+
+            # --- 6. 动词推导收官句 (which yields / evaluates to / simplifies to) ---
+            r"(?:which\s+)?(?:evaluates\s+to|simplifies\s+to|reduces\s+to|yields|results\s+in|comes\s+out\s+to\s+be)\s*[:：]?\s*\$?\s*([0-9\/\.\-]+)",
+            r"(?:hence|therefore|thus|so|which\s+gives|yielding)\s+(?:(?:the\s+)?[a-z0-9_+\-\*\/\s\(\)\{\}\\]+)\s*=\s*([0-9\/\.\-]+)\s*(?:[\.\n\$]|$)",
+
+            # --- 7. 概率与统计测度 (Probability / Expectation) ---
+            r"(?:the\s+)?(?:probability|expected\s+value|expectation)\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+
+            # --- 8. 中文数学奥赛经典结论句式 ---
+            r"(?:最终答案[是为]|答案[是为]|故所求[为是]|总共有|总数为|结果[是为]|面积为|和为|取值为|综上所述[，,]\s*(?:答案为|结果为|所求为)?)\s*[:：]?\s*\$?\s*([0-9\/\.\-]+)",
         ]
         matched_str = None
         for p in patterns:
@@ -282,10 +307,6 @@ def evaluate_single_sample(
     s1_think_tokens = len(tokenizer.encode(s1_parsed.thinking_text, add_special_tokens=False))
     s1_total_tokens = len(tokenizer.encode(s1_raw, add_special_tokens=False))
     s1_correct = is_math_equiv(s1_parsed.extracted_answer, ground_truth)
-    print("\n" + "=" * 60)
-    print("【草稿纸抓包】 s1 模型的最终作答原文 (Answer Text):")
-    print(s1_parsed.answer_text if s1_parsed.answer_text else "[作答舱为空，仍在思考舱]")
-    print("=" * 60)
     print(f"[s1 结果] 思考: {s1_think_tokens} tokens | 提取: '{s1_parsed.extracted_answer}' | 判定:{s1_correct}")
 
     return CompareResult(
@@ -349,7 +370,7 @@ def run_benchmark_comparison(
                     try:
                         record = json.loads(line)
                         if record.get("checkpoint") == checkpoint_name:
-                            evaluated_keys.add(record.get(question))
+                            evaluated_keys.add(record.get("question"))
                     except Exception:
                         pass
 
@@ -396,12 +417,12 @@ def run_benchmark_comparison(
                     "correct": res.baseline_correct
                 },
                 "s1_forcing": {
-                    "thinking_tokens": res.s1_think_tokens,
+                    "thinking_tokens": res.s1_thinking_tokens,
                     "answer": res.s1_answer,
                     "correct": res.s1_correct
                 }
             }
-            Path(output_jsonl).parent.mkdir(parent=True, exist_ok=True)
+            Path(output_jsonl).parent.mkdir(parents=True, exist_ok=True)
             with open(output_jsonl, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
@@ -477,6 +498,46 @@ if __name__ == "__main__":
     from src.config import S1TrainConfig
     from src.train import get_tokenizer
     from src.budget_forcing import load_clean_base_model
+    
+    parser = argparse.ArgumentParser(description="s1 复现工程：通用 Benchmark 批量对比评测管道")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="litmus",
+        choices=["litmus", "s1k"],
+        help="评测数据集模式: 'litmus' (4大试金石) 或 's1k' (从 s1K-1.1 数据集动态抽取)",
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=10,
+        help="评测样本数量 (仅在 --dataset s1k 时生效，建议 10~20)",
+    )
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default="AIME",
+        help="s1K 题目来源过滤标签 (例如 'AIME', 'MATH', 或 'none' 不做过滤)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="outputs/s1-7b-qlora/checkpoint-63",
+        help="LoRA 微调权重路径",
+    )
+    parser.add_argument(
+        "--output_jsonl",
+        type=str,
+        default="outputs/benchmark_results.jsonl",
+        help="流式持久化存盘路径 (JSONL 格式)",
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=1250,
+        help="s1 预算强迫思考目标 token 预算 (默认 1250)",
+    )
+    args = parser.parse_args()
 
     print("=" * 80)
     print("[*] 阶段 1: 数学答案等价性判断")
@@ -508,59 +569,22 @@ if __name__ == "__main__":
 
     model.eval()
 
-    # 黄金适度区间 (Goldilocks Zone) 四大试金石批次评测套件
-    eval_samples = [
-        {
-            "category": "Algebra (s1K-325)",
-            "question": "It is given that \\log_{6}a + \\log_{6}b + \\log_{6}c = 6, where a, b, and c are positive integers that form an increasing geometric sequence and b - a is the square of an integer. Find a + b + c.",
-            "ground_truth": "111",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=1250,
-                max_new_tokens=2560,
-                turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
-            ),
-        },
-        {
-            "category": "Combinatorics (s1K-170)",
-            "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
-            "ground_truth": "15",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=1250,
-                step_chunk_size=256,
-                max_new_tokens=2560,
-                turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
-            ),
-        },
-        {
-            "category": "Geometry (s1K-53)",
-            "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
-            "ground_truth": "13.5",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=1250,
-                step_chunk_size=256,
-                max_new_tokens=2560,
-                turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
-            ),
-        },
-        {
-            "category": "Number Theory (Factor)",
-            "question": "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step.",
-            "ground_truth": "33",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=1250,
-                step_chunk_size=384,
-                max_new_tokens=2560,
-                turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
-            ),
-        },
-    ]
 
     # 通用默认预算配置
     default_forcing_config = BudgetForcingConfig(
-        thinking_budget=384,
-        max_new_tokens=1024,
+        thinking_budget=args.budget,
+        step_chunk_size=384,
+        max_new_tokens=2560,
         turn_prompt="\nWait, let me rethink this problem carefully and verify my calculation step by step:\n",
     )
+
+    if args.dataset == "s1k":
+        eval_samples = load_benchmark_from_s1K(
+            num_samples=args.num_samples,
+            source_filter=args.filter,
+        )
+    else:
+        eval_samples = [...]
     
     # 启动多试金石流水线对比评测
     run_benchmark_comparison(
@@ -568,5 +592,7 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         samples=eval_samples,
         budget_config=default_forcing_config,
+        output_jsonl=args.output_jsonl,
+        checkpoint_name=ckpt_display_name,
     )
 
