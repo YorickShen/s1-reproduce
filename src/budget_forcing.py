@@ -173,9 +173,14 @@ def budget_forcing_generate(
             # 若本轮步长耗尽但未交卷，且总预算未满
             cur_thinking = current_ids.shape[1] - prompt_len
             if cur_thinking < config.thinking_budget:
-                intercept_count += 1
-                print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
-                current_ids = torch.cat([current_ids, turn_tokens], dim=1)
+                remaining = config.thinking_budget - cur_thinking
+                # 末段保护窗口：若剩余预算不足以支撑一次完整的二次反思（< 256 tokens），不恶意打断
+                if remaining >= 256:
+                    intercept_count += 1
+                    print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
+                    current_ids = torch.cat([current_ids, turn_tokens], dim=1)
+                else:
+                    print(f"[*] 距离思考预算仅剩 {remaining} tokens (< 256 保护窗口)，放行当前思维自然收敛...")
 
     # 计算模型还能使用的剩余最大token配额
     total_generated_so_far = current_ids.shape[1] - prompt_len

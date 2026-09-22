@@ -39,20 +39,12 @@ def parse_s1_response(raw_text: str) -> ParsedS1Output:
         thinking_text = thinking_text.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
         answer_text = answer_text.strip()
 
-        # 作答舱必须包含显式结论才算作答成功
-        has_explicit_conclusion = (
-            _extract_boxed_content(answer_text) is not None or
-            any(re.search(p, answer_text, re.IGNORECASE) for p in[
-                r"(?:the\s+final\s+answer\s+is|the\s+answer\s+is|final\s+answer:?)",
-                r"####",
-            ])
-        )
-        if has_explicit_conclusion:
-            # 作答舱有明确结论，优先采纳作答舱
-            extracted_answer = extract_math_answer(answer_text)
-        else:
-            # 作答舱写到一半被掐断，直接去思考舱找有无答案
-            extracted_answer = extract_math_answer(cleaned)
+        # 优先从作答舱提取数学答案（作答舱是模型给出的最终结论）
+        extracted_answer = extract_math_answer(answer_text) if answer_text else ""
+
+        # 兜底：若作答舱未产生有效数值，回退到思考舱末端推断
+        if not extracted_answer and thinking_text:
+            extracted_answer = extract_math_answer(thinking_text)
     else:
         # 2.baseline自由作答
         thinking_text = cleaned.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
@@ -297,6 +289,8 @@ def evaluate_single_sample(
     base_total_tokens = len(tokenizer.encode(baseline_raw,add_special_tokens=False))
     base_correct = is_math_equiv(baseline_parsed.extracted_answer, ground_truth)
     print(f"[Baseline 结果] 思考: {base_think_tokens} tokens | 提取: '{baseline_parsed.extracted_answer}' | 判定:{base_correct}")
+    if baseline_parsed.answer_text:
+        print(f"  └─ [Baseline 作答原文]: {repr(baseline_parsed.answer_text[:120])}")
 
     # 2.运行实验组(s1 Budget forcing)
     print("\n---> 正在运行 s1 ...")
@@ -308,6 +302,10 @@ def evaluate_single_sample(
     s1_total_tokens = len(tokenizer.encode(s1_raw, add_special_tokens=False))
     s1_correct = is_math_equiv(s1_parsed.extracted_answer, ground_truth)
     print(f"[s1 结果] 思考: {s1_think_tokens} tokens | 提取: '{s1_parsed.extracted_answer}' | 判定:{s1_correct}")
+    if s1_parsed.answer_text:
+        print(f"  └─ [s1 作答舱原文]: {repr(s1_parsed.answer_text[:150])}")
+    else:
+        print(f"  └─ [s1 作答舱原文]: (空，模型在作答舱未输出文字)")
 
     return CompareResult(
         question=question,
