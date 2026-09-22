@@ -324,21 +324,31 @@ def evaluate_single_sample(
 
 # 导入数据集
 def load_benchmark_from_s1K(num_samples: int = 3, source_filter: str = "AIME") -> List[Dict[str, str]]:
-    print(f"\n[*] 正在从本地 s1K-1.1 数据集动态抽取 {num_samples} 道  [{source_filter}] 竞赛题...")
+    # 规整化过滤标记：支持 none, all, 空值等自然不过滤语义
+    is_no_filter = (
+        not source_filter
+        or str(source_filter).strip().lower() in ["none", "all", "false", ""]
+    )
+    filter_label = "全量来源 (No Filter)" if is_no_filter else str(source_filter).strip()
+    print(f"\n[*] 正在从本地 s1K-1.1 数据集动态抽取 {num_samples} 道 [{filter_label}] 竞赛题...")
     
     # 直接利用本地缓存
     ds = load_dataset("simplescaling/s1K-1.1", split="train")
     samples = []
     
     for item in ds:
-        # 过滤来源（如 AIME 高阶数学竞赛）
-        if source_filter and source_filter not in item.get("source_type", ""):
+        st = item.get("source_type", "")
+        # 大小写不敏感过滤
+        if not is_no_filter and str(source_filter).strip().lower() not in st.lower():
             continue
         
         # 用我们之前写好的深度切片器提取标准答案
         gold_ans = extract_math_answer(item.get("solution", ""))
         if gold_ans:
+            # 提取简短分类标签（如 AIME_1983_2024、aops_forum），便于在看板与 JSONL 中追溯
+            cat_name = st.split("/")[-1] if "/" in st else (st or "s1K")
             samples.append({
+                "category": cat_name,
                 "question": item["question"],
                 "ground_truth": gold_ans,
             })
@@ -557,13 +567,14 @@ if __name__ == "__main__":
 
     # 挂载经过深度训练的 checkpoint 适配器
     project_root = Path(__file__).resolve().parent.parent
-    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-63"
+    ckpt_arg = Path(args.checkpoint)
+    checkpoint_dir = ckpt_arg if ckpt_arg.is_absolute() else project_root / ckpt_arg
     if checkpoint_dir.exists():
         print(f"[*] 挂载微调 LoRA 权重: {checkpoint_dir}")
         model = PeftModel.from_pretrained(base_model, str(checkpoint_dir))
-        ckpt_display_name = "checkpoint-63"
+        ckpt_display_name = checkpoint_dir.name
     else:
-        print("[!] 未检测到微调权重，使用纯净基座模型")
+        print(f"[!] 未检测到微调权重 {checkpoint_dir}，使用纯净基座模型")
         model = base_model
         ckpt_display_name = "0-step-Base"
 
@@ -584,7 +595,52 @@ if __name__ == "__main__":
             source_filter=args.filter,
         )
     else:
-        eval_samples = [...]
+        # 黄金适度区间 (Goldilocks Zone) 四大试金石批次评测套件
+        eval_samples = [
+            {
+                "category": "Algebra (s1K-325)",
+                "question": "It is given that \\log_{6}a + \\log_{6}b + \\log_{6}c = 6, where a, b, and c are positive integers that form an increasing geometric sequence and b - a is the square of an integer. Find a + b + c.",
+                "ground_truth": "111",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
+                ),
+            },
+            {
+                "category": "Combinatorics (s1K-170)",
+                "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
+                "ground_truth": "15",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    step_chunk_size=256,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
+                ),
+            },
+            {
+                "category": "Geometry (s1K-53)",
+                "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
+                "ground_truth": "13.5",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    step_chunk_size=256,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
+                ),
+            },
+            {
+                "category": "Number Theory (Factor)",
+                "question": "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step.",
+                "ground_truth": "33",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    step_chunk_size=384,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
+                ),
+            },
+        ]
     
     # 启动多试金石流水线对比评测
     run_benchmark_comparison(
