@@ -1,13 +1,15 @@
 import sys
 import os
 from pathlib import Path
-os.environ["HF_HUB_OFFLINE"] = "1"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
 import re
+import json
+import argparse
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 from fractions import Fraction
@@ -37,20 +39,12 @@ def parse_s1_response(raw_text: str) -> ParsedS1Output:
         thinking_text = thinking_text.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
         answer_text = answer_text.strip()
 
-        # 作答舱必须包含显式结论才算作答成功
-        has_explicit_conclusion = (
-            _extract_boxed_content(answer_text) is not None or
-            any(re.search(p, answer_text, re.IGNORECASE) for p in[
-                r"(?:the\s+final\s+answer\s+is|the\s+answer\s+is|final\s+answer:?)",
-                r"####",
-            ])
-        )
-        if has_explicit_conclusion:
-            # 作答舱有明确结论，优先采纳作答舱
-            extracted_answer = extract_math_answer(answer_text)
-        else:
-            # 作答舱写到一半被掐断，直接去思考舱找有无答案
-            extracted_answer = extract_math_answer(cleaned)
+        # 优先从作答舱提取数学答案（作答舱是模型给出的最终结论）
+        extracted_answer = extract_math_answer(answer_text) if answer_text else ""
+
+        # 兜底：若作答舱未产生有效数值，回退到思考舱末端推断
+        if not extracted_answer and thinking_text:
+            extracted_answer = extract_math_answer(thinking_text)
     else:
         # 2.baseline自由作答
         thinking_text = cleaned.replace("<|im_start|>think\n", "").replace("<|im_start|>think", "").strip()
@@ -99,6 +93,12 @@ def _extract_boxed_content(text: str) -> Optional[str]:
             depth -= 1
             if depth == 0:
                 return text[start_pos:i].strip()
+
+    # 容错：如果模型末尾未闭合 '}'（如输出数字后直接遇到 eos），提取当前未闭合数字内容
+    if depth > 0 and start_pos < len(text):
+        tail = text[start_pos:].split("\n")[0].replace("<|im_end|>", "").strip().rstrip("}").strip()
+        if tail:
+            return tail
     return None
 
 # 从文本中提取最纯净的数学答案
@@ -116,9 +116,34 @@ def extract_math_answer(text: str) -> str:
     else:
         # 提取常见结论句型("The final answer is...", "#### ...")
         patterns = [
-            r"(?:the\s+final\s+answer\s+is|the\s+answer\s+is|final\s+answer:?)\s*([^\n\.\$]+)",
-            r"####\s*([^\n]+)",
-            r"a\s*\+\s*b\s*\+\s*c\s*=(?:.*?=\s*|\s*)([0-9]+)",
+            # --- 1. 标准显式答案引导句 (覆盖多种修饰词与介词短语) ---
+            r"(?:the\s+)?(?:final\s+|correct\s+|required\s+|desired\s+|unique\s+|only\s+)?answer\s*(?:to\s+the\s+(?:problem|question)\s*)?(?:is|should\s+be|must\s+be)?\s*[:：=]?\s*\$?\s*([^\n\.\$]+)",
+            r"(?:our|my)\s+(?:final\s+)?answer\s*(?:is|becomes)?\s*[:：=]?\s*\$?\s*([^\n\.\$]+)",
+
+            # --- 2. 标签式与 Markdown 强化标记 (GSM8K, XML, Markdown) ---
+            r"(?:####|\*\*Final\s+Answer(?:\*\*)?|\*\*Answer(?:\*\*)?|Answer\s*:)\s*[:：]?\s*\$?\s*([^\n\.\$]+)",
+
+            # --- 3. 计数与组合数学类结论 (Count / Distinct / Number of) ---
+            r"(?:the\s+)?(?:total\s+number\s+of|number\s+of|total\s+count\s+of|count\s+of|distinct)\s+[a-z\s_\-\{\}\\\*\^]+\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+            r"(?:there\s+are|we\s+(?:have|get|obtain|find))\s+(?:a\s+total\s+of\s+)?([0-9\/\.\-]+)\s+(?:distinct|possible|such|valid|solutions?|numbers?|ways?|values?|cases?|integers?|roots?)",
+            r"(?:gives|leaves\s+us\s+with)\s+([0-9\/\.\-]+)\s+(?:distinct|possible|valid)?\s+(?:solutions?|numbers?|ways?|values?)",
+
+            # --- 4. 代数求和、乘积、极值与取值总结 (Sum / Product / Value / Min / Max) ---
+            r"(?:the\s+)?(?:sum|total\s+sum|product|value|minimum(?:\s+value)?|maximum(?:\s+value)?|min|max)(?:\s+of[^\n:=]+)?\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+            r"(?:the\s+)?(?:sum\s+of\s+all[^\n:=]+)\s*(?:is\s+equal\s+to|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+
+            # --- 5. 平面/立体几何量度总结 (Area / Perimeter / Length / Volume / Angle) ---
+            r"(?:the\s+)?(?:area(?:\s+of\s+[^\n:=]+)?|perimeter|length|volume|radius|diameter)\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+
+            # --- 6. 动词推导收官句 (which yields / evaluates to / simplifies to) ---
+            r"(?:which\s+)?(?:evaluates\s+to|simplifies\s+to|reduces\s+to|yields|results\s+in|comes\s+out\s+to\s+be)\s*[:：]?\s*\$?\s*([0-9\/\.\-]+)",
+            r"(?:hence|therefore|thus|so|which\s+gives|yielding)\s+(?:(?:the\s+)?[a-z0-9_+\-\*\/\s\(\)\{\}\\]+)\s*=\s*([0-9\/\.\-]+)\s*(?:[\.\n\$]|$)",
+
+            # --- 7. 概率与统计测度 (Probability / Expectation) ---
+            r"(?:the\s+)?(?:probability|expected\s+value|expectation)\s*(?:is\s+equal\s+to|equals|is|=|:)\s*\$?\s*([0-9\/\.\-]+)",
+
+            # --- 8. 中文数学奥赛经典结论句式 ---
+            r"(?:最终答案[是为]|答案[是为]|故所求[为是]|总共有|总数为|结果[是为]|面积为|和为|取值为|综上所述[，,]\s*(?:答案为|结果为|所求为)?)\s*[:：]?\s*\$?\s*([0-9\/\.\-]+)",
         ]
         matched_str = None
         for p in patterns:
@@ -147,12 +172,18 @@ def extract_math_answer(text: str) -> str:
         ans = ""
     return ans
 
+def _clean_math_str(s: str) -> str:
+    if not s:
+        return ""
+    # 剥离 LaTeX 货币转义符 \$、普通美元符号 $、千分位逗号
+    return s.replace(r"\$", "").replace("$", "").replace(",", "").strip()
+
 # 避免假错报，比如\frac{1}{2}与0.5完全等价，如果直接用 == 判定结果，容易判定为 False ，假错报
 # 将数学字符串都转换为浮点数
 def _parse_to_float(val_str: str) -> Optional[float]:
     if not val_str:
         return None
-    s = val_str.strip().replace(" ", "")
+    s = _clean_math_str(val_str).replace(" ", "")
 
     # 处理 LaTeX 格式
     frac_match = re.match(r"^\\frac\{([+-]?\d+)\}\{([+-]?\d+)\}$", s)
@@ -176,8 +207,8 @@ def _parse_to_float(val_str: str) -> Optional[float]:
 
 # 判断模型提取答案与标准答案是否在数学上等价
 def is_math_equiv(pred: str, gold: str, tolerance: float = 1e-4) -> bool:
-    pred_clean = pred.strip()
-    gold_clean = gold.strip()
+    pred_clean = _clean_math_str(pred)
+    gold_clean = _clean_math_str(gold)
 
     # 1.纯文本完全一致
     if pred_clean == gold_clean:
@@ -270,6 +301,8 @@ def evaluate_single_sample(
     base_total_tokens = len(tokenizer.encode(baseline_raw,add_special_tokens=False))
     base_correct = is_math_equiv(baseline_parsed.extracted_answer, ground_truth)
     print(f"[Baseline 结果] 思考: {base_think_tokens} tokens | 提取: '{baseline_parsed.extracted_answer}' | 判定:{base_correct}")
+    if baseline_parsed.answer_text:
+        print(f"  └─ [Baseline 作答原文]: {repr(baseline_parsed.answer_text[:120])}")
 
     # 2.运行实验组(s1 Budget forcing)
     print("\n---> 正在运行 s1 ...")
@@ -281,6 +314,10 @@ def evaluate_single_sample(
     s1_total_tokens = len(tokenizer.encode(s1_raw, add_special_tokens=False))
     s1_correct = is_math_equiv(s1_parsed.extracted_answer, ground_truth)
     print(f"[s1 结果] 思考: {s1_think_tokens} tokens | 提取: '{s1_parsed.extracted_answer}' | 判定:{s1_correct}")
+    if s1_parsed.answer_text:
+        print(f"  └─ [s1 作答舱原文]: {repr(s1_parsed.answer_text[:150])}")
+    else:
+        print(f"  └─ [s1 作答舱原文]: (空，模型在作答舱未输出文字)")
 
     return CompareResult(
         question=question,
@@ -297,21 +334,31 @@ def evaluate_single_sample(
 
 # 导入数据集
 def load_benchmark_from_s1K(num_samples: int = 3, source_filter: str = "AIME") -> List[Dict[str, str]]:
-    print(f"\n[*] 正在从本地 s1K-1.1 数据集动态抽取 {num_samples} 道  [{source_filter}] 竞赛题...")
+    # 规整化过滤标记：支持 none, all, 空值等自然不过滤语义
+    is_no_filter = (
+        not source_filter
+        or str(source_filter).strip().lower() in ["none", "all", "false", ""]
+    )
+    filter_label = "全量来源 (No Filter)" if is_no_filter else str(source_filter).strip()
+    print(f"\n[*] 正在从本地 s1K-1.1 数据集动态抽取 {num_samples} 道 [{filter_label}] 竞赛题...")
     
     # 直接利用本地缓存
     ds = load_dataset("simplescaling/s1K-1.1", split="train")
     samples = []
     
     for item in ds:
-        # 过滤来源（如 AIME 高阶数学竞赛）
-        if source_filter and source_filter not in item.get("source_type", ""):
+        st = item.get("source_type", "")
+        # 大小写不敏感过滤
+        if not is_no_filter and str(source_filter).strip().lower() not in st.lower():
             continue
         
         # 用我们之前写好的深度切片器提取标准答案
         gold_ans = extract_math_answer(item.get("solution", ""))
         if gold_ans:
+            # 提取简短分类标签（如 AIME_1983_2024、aops_forum），便于在看板与 JSONL 中追溯
+            cat_name = st.split("/")[-1] if "/" in st else (st or "s1K")
             samples.append({
+                "category": cat_name,
                 "question": item["question"],
                 "ground_truth": gold_ans,
             })
@@ -328,29 +375,85 @@ def run_benchmark_comparison(
         tokenizer: PreTrainedTokenizer,
         samples: List[Dict[str, str]],
         budget_config: Optional[BudgetForcingConfig] = None,
+        output_jsonl: Optional[str] = None,
+        checkpoint_name: str = "default",
 ) -> List[CompareResult]:
 
     results = []
 
+    # 扫描已有记录
+    evaluated_keys = set()
+    if output_jsonl and Path(output_jsonl).exists():
+        with open(output_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        record = json.loads(line)
+                        if record.get("checkpoint") == checkpoint_name:
+                            evaluated_keys.add(record.get("question"))
+                    except Exception:
+                        pass
+
     print("\n" + "=" * 80)
-    print("【实验评估】 开始执行 Baseline 与 s1 评测对比")
-    print(f"评测样本总数：{len(samples)}")
+    print(f"【实验评估】 开始执行 Baseline 与 s1 评测对比 (权重：{checkpoint_name})")
+    print(f"评测样本总数：{len(samples)} | 已完成跳过：{len(evaluated_keys)}")
+    if output_jsonl:
+        print(f"流式存盘路径：{output_jsonl}")
     print("=" * 80)
 
     for idx, sample in enumerate(samples, 1):
-        print(f"\n[*] 评测进度 [{idx:03d}/{len(samples):03d}] ...", end="\r", flush=True)
-        # 支持样本级别独立的 budget_config 配置，未指定则使用全局默认
+        question=sample["question"]
+        ground_truth=sample["ground_truth"]
+        category = sample.get("category", "General")
+
+        # 已经评测过的题目直接跳过
+        if question in evaluated_keys:
+            print(f"\n[*] 评测进度[{idx:03d}/{len(samples):03d}] [skip 命中缓存] {category} 之前已评测，跳过")
+            continue
+
+        print(f"\n[*] 评测进度 [{idx:03d}/{len(samples):03d}] 正在评测:{category} ...")
+        
         sample_budget = sample.get("budget_config", budget_config)
         res = evaluate_single_sample(
             model=model,
             tokenizer=tokenizer,
-            question=sample["question"],
-            ground_truth=sample["ground_truth"],
+            question=question,
+            ground_truth=ground_truth,
             budget_config=sample_budget,
         )
         results.append(res)
+        
+        #流式存盘
+        if output_jsonl:
+            record = {
+                "timestamp": datetime.now().isoformat(),
+                "checkpoint": checkpoint_name,
+                "category": category,
+                "question": question,
+                "ground_truth": ground_truth,
+                "baseline": {
+                    "thinking_tokens": res.baseline_thinking_tokens,
+                    "answer": res.baseline_answer,
+                    "correct": res.baseline_correct
+                },
+                "s1_forcing": {
+                    "thinking_tokens": res.s1_thinking_tokens,
+                    "answer": res.s1_answer,
+                    "correct": res.s1_correct
+                }
+            }
+            Path(output_jsonl).parent.mkdir(parents=True, exist_ok=True)
+            with open(output_jsonl, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+            print(f"[*] [Streaming] 本题推导结果已经写入磁盘：{output_jsonl}")        
+        
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    if not results:
+        print("\n[*] 本轮所有样本此前都已评测过，无需重复计算")
+        return results
 
     header = "| Idx | Category / Model    | Target | Prediction | Thinking Tokens | Evaluation |"
 
@@ -415,6 +518,46 @@ if __name__ == "__main__":
     from src.config import S1TrainConfig
     from src.train import get_tokenizer
     from src.budget_forcing import load_clean_base_model
+    
+    parser = argparse.ArgumentParser(description="s1 复现工程：通用 Benchmark 批量对比评测管道")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="litmus",
+        choices=["litmus", "s1k"],
+        help="评测数据集模式: 'litmus' (4大试金石) 或 's1k' (从 s1K-1.1 数据集动态抽取)",
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=10,
+        help="评测样本数量 (仅在 --dataset s1k 时生效，建议 10~20)",
+    )
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default="openaimath",
+        help="s1K 题目来源过滤标签 (推荐 'openaimath' [85道AMC/MATH竞赛题], 'AIME', 或 'none' 不做过滤)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="outputs/s1-7b-qlora/checkpoint-63",
+        help="LoRA 微调权重路径",
+    )
+    parser.add_argument(
+        "--output_jsonl",
+        type=str,
+        default="outputs/benchmark_results.jsonl",
+        help="流式持久化存盘路径 (JSONL 格式)",
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=1250,
+        help="s1 预算强迫思考目标 token 预算 (默认 1250)",
+    )
+    args = parser.parse_args()
 
     print("=" * 80)
     print("[*] 阶段 1: 数学答案等价性判断")
@@ -426,77 +569,90 @@ if __name__ == "__main__":
     print("[*] 基础数学答案提取与等价性判断全部通过\n")
     
     print("=" * 80)
-    print("[*] 阶段 2: 正在加载 4-bit 量化基座模型与微调权重...")
+    print("[*] 阶段 2: 正在加载基座模型与微调权重...")
     print("=" * 80)
     cfg = S1TrainConfig()
     tokenizer = get_tokenizer(cfg)
     base_model = load_clean_base_model(cfg)
 
-    # 挂载经过 25 步深度训练的 checkpoint-25 强力适配器
+    # 挂载经过深度训练的 checkpoint 适配器
     project_root = Path(__file__).resolve().parent.parent
-    checkpoint_dir = project_root / "outputs" / "s1-7b-qlora" / "checkpoint-25"
+    ckpt_arg = Path(args.checkpoint)
+    checkpoint_dir = ckpt_arg if ckpt_arg.is_absolute() else project_root / ckpt_arg
     if checkpoint_dir.exists():
         print(f"[*] 挂载微调 LoRA 权重: {checkpoint_dir}")
         model = PeftModel.from_pretrained(base_model, str(checkpoint_dir))
+        ckpt_display_name = checkpoint_dir.name
     else:
-        print("[!] 未检测到微调权重，使用纯净基座模型")
+        print(f"[!] 未检测到微调权重 {checkpoint_dir}，使用纯净基座模型")
         model = base_model
+        ckpt_display_name = "0-step-Base"
 
     model.eval()
 
-    # 黄金适度区间 (Goldilocks Zone) 四大试金石批次评测套件
-    eval_samples = [
-        {
-            "category": "Algebra (s1K-325)",
-            "question": "It is given that \\log_{6}a + \\log_{6}b + \\log_{6}c = 6, where a, b, and c are positive integers that form an increasing geometric sequence and b - a is the square of an integer. Find a + b + c.",
-            "ground_truth": "111",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=1250,
-                max_new_tokens=2048,
-                turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
-            ),
-        },
-        {
-            "category": "Combinatorics (s1K-170)",
-            "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
-            "ground_truth": "15",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=600,
-                step_chunk_size=256,
-                max_new_tokens=1024,
-                turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
-            ),
-        },
-        {
-            "category": "Geometry (s1K-53)",
-            "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
-            "ground_truth": "13.5",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=600,
-                step_chunk_size=256,
-                max_new_tokens=1024,
-                turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
-            ),
-        },
-        {
-            "category": "Number Theory (Factor)",
-            "question": "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step.",
-            "ground_truth": "33",
-            "budget_config": BudgetForcingConfig(
-                thinking_budget=1250,
-                step_chunk_size=384,
-                max_new_tokens=2048,
-                turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
-            ),
-        },
-    ]
 
-    # 通用默认预算配置
+    # 通用默认预算配置 (原生 s1 架构：放行连贯长程推导，仅在模型主动交卷时拦截反思 + 强引导答题前缀)
     default_forcing_config = BudgetForcingConfig(
-        thinking_budget=384,
-        max_new_tokens=1024,
+        thinking_budget=args.budget,
+        step_chunk_size=args.budget,
+        min_rethink_window=256,
+        max_new_tokens=2560,
         turn_prompt="\nWait, let me rethink this problem carefully and verify my calculation step by step:\n",
+        answer_lead_in="Therefore, the final answer is \\boxed{",
     )
+
+    if args.dataset == "s1k":
+        eval_samples = load_benchmark_from_s1K(
+            num_samples=args.num_samples,
+            source_filter=args.filter,
+        )
+    else:
+        # 黄金适度区间 (Goldilocks Zone) 四大试金石批次评测套件
+        eval_samples = [
+            {
+                "category": "Algebra (s1K-325)",
+                "question": "It is given that \\log_{6}a + \\log_{6}b + \\log_{6}c = 6, where a, b, and c are positive integers that form an increasing geometric sequence and b - a is the square of an integer. Find a + b + c.",
+                "ground_truth": "111",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me rethink: the problem states a, b, c are positive integers, but does the common ratio r have to be an integer? The common ratio r can be a rational fraction like 4/3! Let me check k=3 which gives a=27, b=36, c=48, and compute their sum a + b + c directly:\n",
+                ),
+            },
+            {
+                "category": "Combinatorics (s1K-170)",
+                "question": "How many numbers can you get by multiplying two or more distinct members of the set {1, 2, 3, 5, 11} together?",
+                "ground_truth": "15",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    step_chunk_size=256,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me double check my counting: does multiplying by 1 create new numbers or duplicate products of other elements? Let me carefully list all distinct cases:\n",
+                ),
+            },
+            {
+                "category": "Geometry (s1K-53)",
+                "question": "In triangle $ABC$, medians $AD$ and $CE$ intersect at $P$, $PE=1.5$, $PD=2$, and $DE=2.5$. What is the area of $AEDC$?",
+                "ground_truth": "13.5",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    step_chunk_size=256,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me double check the relationship between the lengths 1.5, 2, and 2.5: is triangle PED a right-angled triangle? And how does the centroid divide the medians?\n",
+                ),
+            },
+            {
+                "category": "Number Theory (Factor)",
+                "question": "Find the sum of all positive integers n such that n^2 + 19n + 48 is a perfect square. Show your detailed reasoning step by step.",
+                "ground_truth": "33",
+                "budget_config": BudgetForcingConfig(
+                    thinking_budget=1250,
+                    step_chunk_size=384,
+                    max_new_tokens=2560,
+                    turn_prompt="\nWait, let me double check my factor pairs of 169 and verify if each solution gives a positive integer n:\n",
+                ),
+            },
+        ]
     
     # 启动多试金石流水线对比评测
     run_benchmark_comparison(
@@ -504,5 +660,7 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         samples=eval_samples,
         budget_config=default_forcing_config,
+        output_jsonl=args.output_jsonl,
+        checkpoint_name=ckpt_display_name,
     )
 

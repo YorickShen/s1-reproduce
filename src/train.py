@@ -1,9 +1,9 @@
 import os
 import sys
-from pathlib import Path
 
-# 离线挂载
-os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+
+from pathlib import Path
 
 # 确保在任意工作目录下运行都能正确定位项目根目录
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -41,26 +41,39 @@ def get_tokenizer(config: S1TrainConfig):
 
 # QLoRA（4-bit 量化加载）模型初始化
 def get_model(config: S1TrainConfig):
-    # 声明模型如何被压缩与如何计算
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=config.load_in_4bit,
-        bnb_4bit_quant_type=config.bnb_4bit_quant_type,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True
-    )
+    if config.load_in_4bit:
+        print("[*] 正在以 4-bit NF4 量化加载基座模型（消费级显卡模式）")
+        # 声明模型如何被压缩与如何计算
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=config.load_in_4bit,
+            bnb_4bit_quant_type=config.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True
+        )
 
-    # 模型实例化
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True
-    )
+        # 模型实例化
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True
+        )
 
-    # 冻结非量化参数并支持梯度检查点
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-
+        # 冻结非量化参数并支持梯度检查点
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    else:
+        print("[*] 正在以 原生纯净 bfloat16 精度加载基座模型 (云端 24GB 算力释放模式)...")
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="sdpa"
+        )
+        # 原生 BF16 开启梯度检查点，极致压缩显存激活值以容纳 4096 上下文
+        model.gradient_checkpointing_enable()
+    
     # 配置 LoRA
     peft_config = LoraConfig(
         r=config.lora_r,
@@ -171,14 +184,16 @@ if __name__ == "__main__":
     cfg = S1TrainConfig()
 
     print("=" * 60)
-    print("[*] 正在启动 5-step 安全冒烟微调 (S1 LoRA Smoke Test)...")
+    print("[*] 正在启动 s1-7B 原生 BF16 微调...")
     print(f"[*] 基座模型: {cfg.model_name}")
+    print(f"[*] 上下文窗口: {cfg.max_seq_length}")
     print(f"[*] 物理 Batch Size: {cfg.per_device_train_batch_size}")
     print(f"[*] 梯度累积步数: {cfg.gradient_accumulation_steps}")
     print(f"[*] 目标步数: {cfg.max_steps} steps")
+    print(f"[*] Checkpoint 保存间隔: 每 {cfg.save_steps} 步")
     print(f"[*] 优化器: {cfg.optim}")
     print("=" * 60)
 
     # 抽取 32 条长思维链样本，10 步安全高效跑通并存盘
-    train(cfg, max_samples=32)
+    train(cfg, max_samples=None)
 

@@ -6,8 +6,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ["HF_HUB_OFFLINE"] = "1"
-
 from dataclasses import dataclass
 from typing import List, Optional
 import torch
@@ -42,8 +40,14 @@ class BudgetForcingConfig:
     answer_start_token: str = "\n<|im_start|>answer\n"
     eos_token: str = "<|im_end|>"
 
-    # 前向推理最大步长
-    step_chunk_size: int =256
+    # 核心：强引导交卷前缀（让模型在作答舱直奔标答）
+    answer_lead_in: str = "Therefore, the final answer is \\boxed{"
+
+    # 前向推理最大步长（默认与预算对齐，实现连贯推导，仅在模型主动交卷时抓包拦截）
+    step_chunk_size: int = 1250
+
+    # 最小反思保护窗口
+    min_rethink_window: int = 256
 
 # 哨兵类，在目标 token 序列停止
 class StopOnTokenSequenceCriteria(StoppingCriteria):
@@ -63,24 +67,32 @@ class StopOnTokenSequenceCriteria(StoppingCriteria):
         tail = input_ids[0,-self.seq_len:]
         return torch.equal(tail, self.target_tensor)
 
-#  加载纯净的 4-bit 量化基座模型，不提前包裹未经训练的 LoRA 壳
+#  加载纯净量化基座模型，不提前包裹未经训练的 LoRA 壳
 def load_clean_base_model(config: S1TrainConfig):
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=config.load_in_4bit,
-        bnb_4bit_quant_type=config.bnb_4bit_quant_type,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True
-    )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        local_files_only=True
-    )
-
+    if config.load_in_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=config.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="sdpa"
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="sdpa"
+        )
+        
     return model
 
 # s1论文核心推理算法
@@ -123,6 +135,12 @@ def budget_forcing_generate(
             if not torch.equal(current_ids[0, -len(answer_tokens):], stop_criteria.target_tensor):
                 answer_tensor = torch.tensor([answer_tokens], dtype=torch.long, device=device)
                 current_ids = torch.cat([current_ids, answer_tensor], dim=1)
+            
+            # 方案 2 核心：注入强引导答题前缀（直奔标答格式）
+            if config.answer_lead_in:
+                lead_in_tokens = tokenizer.encode(config.answer_lead_in, add_special_tokens=False)
+                lead_in_tensor = torch.tensor([lead_in_tokens], dtype=torch.long, device=device)
+                current_ids = torch.cat([current_ids, lead_in_tensor], dim=1)
             break
 
         # 还剩多少思考 token
@@ -156,6 +174,11 @@ def budget_forcing_generate(
                 current_ids = torch.cat([current_ids, turn_tokens], dim=1)
                 print(f"[*] 已强行注入思考转折词，继续思考推导")
             else:
+                # 自然达到预算交卷，同样注入强引导
+                if config.answer_lead_in:
+                    lead_in_tokens = tokenizer.encode(config.answer_lead_in, add_special_tokens=False)
+                    lead_in_tensor = torch.tensor([lead_in_tokens], dtype=torch.long, device=device)
+                    current_ids = torch.cat([current_ids, lead_in_tensor], dim=1)
                 break
         elif current_ids[0, -1].item() == eos_token_id:
             # 若模型输出了 <|im_end|>，剥除该标记并注入转折词
@@ -167,9 +190,12 @@ def budget_forcing_generate(
             # 若本轮步长耗尽但未交卷，且总预算未满
             cur_thinking = current_ids.shape[1] - prompt_len
             if cur_thinking < config.thinking_budget:
-                intercept_count += 1
-                print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
-                current_ids = torch.cat([current_ids, turn_tokens], dim=1)
+                remaining = config.thinking_budget - cur_thinking
+                # 末段保护窗口：若剩余预算不足以支撑一次完整的二次反思，不恶意打断
+                if remaining >= config.min_rethink_window:
+                    intercept_count += 1
+                    print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
+                    current_ids = torch.cat([current_ids, turn_tokens], dim=1)
 
     # 计算模型还能使用的剩余最大token配额
     total_generated_so_far = current_ids.shape[1] - prompt_len
