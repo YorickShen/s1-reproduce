@@ -40,13 +40,13 @@ class BudgetForcingConfig:
     answer_start_token: str = "\n<|im_start|>answer\n"
     eos_token: str = "<|im_end|>"
 
-    # 方案 2 核心：强引导交卷前缀（让模型在作答舱直奔标答）
+    # 核心：强引导交卷前缀（让模型在作答舱直奔标答）
     answer_lead_in: str = "Therefore, the final answer is \\boxed{"
 
     # 前向推理最大步长（默认与预算对齐，实现连贯推导，仅在模型主动交卷时抓包拦截）
     step_chunk_size: int = 1250
 
-    # 最小反思保护窗口（低于此配额时不打断，自然收敛）
+    # 最小反思保护窗口
     min_rethink_window: int = 256
 
 # 哨兵类，在目标 token 序列停止

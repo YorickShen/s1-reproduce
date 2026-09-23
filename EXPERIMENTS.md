@@ -967,6 +967,8 @@ flowchart TD
 - **Step 50**：Loss 下降至 `0.428`（成功落盘 `checkpoint-50`）；
 - **Step 63**：Loss 收敛至 **`0.381`**，顺利完成 1 个完整轮次的学习，产出旗舰微调权重 `checkpoint-63`。
 
+![RTX 4090 63步全量微调收敛与落盘现场](assets/exp07/exp07_bf16_training_63steps_success.png)
+
 ---
 
 ### 2. 四大黄金试金石对决初测 (The 4 Golden Litmus Tests)
@@ -1065,21 +1067,32 @@ flowchart TD
   - 推理期算力扩展比 : -18.6%
 ```
 
+![10题真实竞赛对比表1与宏观表2全景终结看板](assets/exp07/exp07_final_table1_and_table2_knockout.png)
+
 ![实验07终极对比大看板](assets/exp07/s1_benchmark_visual.png)
 
-#### 4.1 三场关键胜局微观机理解析：
+#### 4.1 三场关键胜局微观机理解析与终端现场证据：
+
 1. **样本 01（代数 - 借款复利利息差）**：
    - 题目求解 4 年期按季度复利比按年度复利的差额，精确到分（Cent）；
-   - Baseline 推导出大致数量级，仅输出了整数 `187`；
+   - Baseline 推导出大致数量级，仅输出了整数 `187`（丢失小数分厘，判 FAIL）；
    - s1 在连贯 1250 步思考与强引导作答舱收拢下，精确输出了 `\boxed{187.12}`，分毫不差命中黄金标答！
+
+   ![样本01代数复利精确分值187.12命中现场](assets/exp07/exp07_sample01_algebra_cents_pass.png)
+
 2. **样本 05（高等代数 - 3D 旋转矩阵高次幂 $A^{2018}$）**：【全场最惊艳胜局！】
    - 标答是整个结构极其复杂的 $3 \times 3$ LaTeX 矩阵 $\begin{pmatrix} \frac{1}{2} & 0 & -\frac{\sqrt{3}}{2} \\ 0 & 1 & 0 \\ \frac{\sqrt{3}}{2} & 0 & \frac{1}{2} \end{pmatrix}$；
    - Baseline 漫游至 1536 步直接超时，交了白卷（`''`）；
    - s1 在 1250 步内，完整识别出该矩阵为绕 Y 轴旋转 $\pi/6$（$30^\circ$）且周期为 12 的几何变换，利用 $2018 \equiv 2 \pmod{12}$ 算出了二次幂，并在作答舱中**完整输出了一字不差的整个 LaTeX 矩阵**，提取器全字段比对 100% 匹配 PASS！
+
+   ![样本05完整3x3LaTeX矩阵精准推导命中现场](assets/exp07/exp07_sample05_matrix_power_pass.png)
+
 3. **样本 06（预备微积分 - 三角形中线与余切差 $|\cot B - \cot C|$）**：
    - 标答为整数 `2`；
    - Baseline 再次在长思维链中迷失超时；
    - s1 稳定展开中线向量分解定理，算出 $|\cot B - \cot C| = 2 \cot 45^\circ = \mathbf{2}$ 干净胜出。
+
+   ![样本06三角中线余切差标答2命中现场](assets/exp07/exp07_sample06_trig_cotangent_pass.png)
 
 ---
 
