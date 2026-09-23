@@ -93,6 +93,12 @@ def _extract_boxed_content(text: str) -> Optional[str]:
             depth -= 1
             if depth == 0:
                 return text[start_pos:i].strip()
+
+    # 容错：如果模型末尾未闭合 '}'（如输出数字后直接遇到 eos），提取当前未闭合数字内容
+    if depth > 0 and start_pos < len(text):
+        tail = text[start_pos:].split("\n")[0].replace("<|im_end|>", "").strip().rstrip("}").strip()
+        if tail:
+            return tail
     return None
 
 # 从文本中提取最纯净的数学答案
@@ -524,8 +530,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--filter",
         type=str,
-        default="AIME",
-        help="s1K 题目来源过滤标签 (例如 'AIME', 'MATH', 或 'none' 不做过滤)",
+        default="openaimath",
+        help="s1K 题目来源过滤标签 (推荐 'openaimath' [85道AMC/MATH竞赛题], 'AIME', 或 'none' 不做过滤)",
     )
     parser.add_argument(
         "--checkpoint",
@@ -579,12 +585,14 @@ if __name__ == "__main__":
     model.eval()
 
 
-    # 通用默认预算配置
+    # 通用默认预算配置 (方案 2 落地：256 步长 + 256 保护窗口 + 强引导答题前缀)
     default_forcing_config = BudgetForcingConfig(
         thinking_budget=args.budget,
-        step_chunk_size=384,
+        step_chunk_size=256,
+        min_rethink_window=256,
         max_new_tokens=2560,
         turn_prompt="\nWait, let me rethink this problem carefully and verify my calculation step by step:\n",
+        answer_lead_in="Therefore, the final answer is \\boxed{",
     )
 
     if args.dataset == "s1k":

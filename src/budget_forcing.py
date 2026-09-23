@@ -40,8 +40,14 @@ class BudgetForcingConfig:
     answer_start_token: str = "\n<|im_start|>answer\n"
     eos_token: str = "<|im_end|>"
 
-    # 前向推理最大步长
-    step_chunk_size: int =256
+    # 方案 2 核心：强引导交卷前缀（让模型在作答舱直奔标答）
+    answer_lead_in: str = "Therefore, the final answer is \\boxed{"
+
+    # 前向推理最大步长（优化为 256，与 1250 预算更协调）
+    step_chunk_size: int = 256
+
+    # 最小反思保护窗口（低于此配额时不打断，自然收敛）
+    min_rethink_window: int = 256
 
 # 哨兵类，在目标 token 序列停止
 class StopOnTokenSequenceCriteria(StoppingCriteria):
@@ -129,6 +135,12 @@ def budget_forcing_generate(
             if not torch.equal(current_ids[0, -len(answer_tokens):], stop_criteria.target_tensor):
                 answer_tensor = torch.tensor([answer_tokens], dtype=torch.long, device=device)
                 current_ids = torch.cat([current_ids, answer_tensor], dim=1)
+            
+            # 方案 2 核心：注入强引导答题前缀（直奔标答格式）
+            if config.answer_lead_in:
+                lead_in_tokens = tokenizer.encode(config.answer_lead_in, add_special_tokens=False)
+                lead_in_tensor = torch.tensor([lead_in_tokens], dtype=torch.long, device=device)
+                current_ids = torch.cat([current_ids, lead_in_tensor], dim=1)
             break
 
         # 还剩多少思考 token
@@ -162,6 +174,11 @@ def budget_forcing_generate(
                 current_ids = torch.cat([current_ids, turn_tokens], dim=1)
                 print(f"[*] 已强行注入思考转折词，继续思考推导")
             else:
+                # 自然达到预算交卷，同样注入强引导
+                if config.answer_lead_in:
+                    lead_in_tokens = tokenizer.encode(config.answer_lead_in, add_special_tokens=False)
+                    lead_in_tensor = torch.tensor([lead_in_tokens], dtype=torch.long, device=device)
+                    current_ids = torch.cat([current_ids, lead_in_tensor], dim=1)
                 break
         elif current_ids[0, -1].item() == eos_token_id:
             # 若模型输出了 <|im_end|>，剥除该标记并注入转折词
@@ -174,13 +191,13 @@ def budget_forcing_generate(
             cur_thinking = current_ids.shape[1] - prompt_len
             if cur_thinking < config.thinking_budget:
                 remaining = config.thinking_budget - cur_thinking
-                # 末段保护窗口：若剩余预算不足以支撑一次完整的二次反思（< 256 tokens），不恶意打断
-                if remaining >= 256:
+                # 末段保护窗口：若剩余预算不足以支撑一次完整的二次反思，不恶意打断
+                if remaining >= config.min_rethink_window:
                     intercept_count += 1
                     print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
                     current_ids = torch.cat([current_ids, turn_tokens], dim=1)
                 else:
-                    print(f"[*] 距离思考预算仅剩 {remaining} tokens (< 256 保护窗口)，放行当前思维自然收敛...")
+                    print(f"[*] 距离思考预算仅剩 {remaining} tokens (< {config.min_rethink_window} 保护窗口)，放行当前思维自然收敛...")
 
     # 计算模型还能使用的剩余最大token配额
     total_generated_so_far = current_ids.shape[1] - prompt_len
