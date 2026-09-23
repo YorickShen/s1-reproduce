@@ -43,8 +43,8 @@ class BudgetForcingConfig:
     # 方案 2 核心：强引导交卷前缀（让模型在作答舱直奔标答）
     answer_lead_in: str = "Therefore, the final answer is \\boxed{"
 
-    # 前向推理最大步长（优化为 256，与 1250 预算更协调）
-    step_chunk_size: int = 256
+    # 前向推理最大步长（默认与预算对齐，实现连贯推导，仅在模型主动交卷时抓包拦截）
+    step_chunk_size: int = 1250
 
     # 最小反思保护窗口（低于此配额时不打断，自然收敛）
     min_rethink_window: int = 256
@@ -196,8 +196,6 @@ def budget_forcing_generate(
                     intercept_count += 1
                     print(f"[*] [主动启发 {intercept_count} 次] 模型已推导 {cur_thinking} tokens，主动注入转折词...")
                     current_ids = torch.cat([current_ids, turn_tokens], dim=1)
-                else:
-                    print(f"[*] 距离思考预算仅剩 {remaining} tokens (< {config.min_rethink_window} 保护窗口)，放行当前思维自然收敛...")
 
     # 计算模型还能使用的剩余最大token配额
     total_generated_so_far = current_ids.shape[1] - prompt_len

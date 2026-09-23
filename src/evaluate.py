@@ -172,12 +172,18 @@ def extract_math_answer(text: str) -> str:
         ans = ""
     return ans
 
+def _clean_math_str(s: str) -> str:
+    if not s:
+        return ""
+    # 剥离 LaTeX 货币转义符 \$、普通美元符号 $、千分位逗号
+    return s.replace(r"\$", "").replace("$", "").replace(",", "").strip()
+
 # 避免假错报，比如\frac{1}{2}与0.5完全等价，如果直接用 == 判定结果，容易判定为 False ，假错报
 # 将数学字符串都转换为浮点数
 def _parse_to_float(val_str: str) -> Optional[float]:
     if not val_str:
         return None
-    s = val_str.strip().replace(" ", "")
+    s = _clean_math_str(val_str).replace(" ", "")
 
     # 处理 LaTeX 格式
     frac_match = re.match(r"^\\frac\{([+-]?\d+)\}\{([+-]?\d+)\}$", s)
@@ -201,8 +207,8 @@ def _parse_to_float(val_str: str) -> Optional[float]:
 
 # 判断模型提取答案与标准答案是否在数学上等价
 def is_math_equiv(pred: str, gold: str, tolerance: float = 1e-4) -> bool:
-    pred_clean = pred.strip()
-    gold_clean = gold.strip()
+    pred_clean = _clean_math_str(pred)
+    gold_clean = _clean_math_str(gold)
 
     # 1.纯文本完全一致
     if pred_clean == gold_clean:
@@ -585,10 +591,10 @@ if __name__ == "__main__":
     model.eval()
 
 
-    # 通用默认预算配置 (方案 2 落地：256 步长 + 256 保护窗口 + 强引导答题前缀)
+    # 通用默认预算配置 (原生 s1 架构：放行连贯长程推导，仅在模型主动交卷时拦截反思 + 强引导答题前缀)
     default_forcing_config = BudgetForcingConfig(
         thinking_budget=args.budget,
-        step_chunk_size=256,
+        step_chunk_size=args.budget,
         min_rethink_window=256,
         max_new_tokens=2560,
         turn_prompt="\nWait, let me rethink this problem carefully and verify my calculation step by step:\n",
